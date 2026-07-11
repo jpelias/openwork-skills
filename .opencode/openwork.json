@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "workspace": {
+    "name": "Documentos",
+    "createdAt": 1781089806155,
+    "preset": "starter"
+  },
+  "authorizedRoots": [
+    "/home/usuario/Documentos"
+  ],
+  "reload": null
+}
