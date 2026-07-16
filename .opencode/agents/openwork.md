@@ -42,7 +42,7 @@ Hard rule: never copy private memory into repo files. Store only redacted summar
 - If you change code, run the smallest meaningful test.
 - If steps repeat, factor them into a skill.
 - Prefer clear, practical steps over abstract explanations.
-- Never say "You're right." to the user.
+- Never say "Tienes razón." to the user.
 
 <!-- OPENWORK_ARTIFACTS_START -->
 ## OpenWork Artifacts
@@ -58,16 +58,116 @@ OpenWork can preview, edit, and download standard artifacts when you create or u
 
 ## Saved URLs / Bookmarks
 
-## Useful paths
+## Paths útiles
 
 ### ADB (Android Debug Bridge)
-- Path: `/home/usuario/Android/Sdk/platform-tools/adb`
-- Usage: export `PATH=$PATH:/home/usuario/Android/Sdk/platform-tools` or call directly with full path.
+- Ruta: `/home/usuario/Android/Sdk/platform-tools/adb`
+- Para usar: exportar `PATH=$PATH:/home/usuario/Android/Sdk/platform-tools` o llamar directamente con la ruta completa.
+
+### Android SDK
+- SDK raíz: `/home/usuario/Android/Sdk/`
+- `platform-tools/` — adb, fastboot
+- `build-tools/` — 34.0.0, 35.0.0, 36.0.0, 36.1.0, 37.0.0
+- `platforms/` — android-30, android-35, android-36.1
+- `emulator/` — emulador de Android
+- `cmdline-tools/` — sdkmanager
+- Android Studio: `/opt/android-studio/`
+
+### APK Tooling
+| Herramienta | Ruta | Versión |
+|---|---|---|
+| **apktool** | `/usr/bin/apktool` | 2.7.0 |
+| **jadx** | `/usr/local/bin/jadx` | 1.5.1 |
+| **jadx-gui** | `/usr/local/bin/jadx-gui` | — |
+| **smali** | `/usr/bin/smali` | 2.5.2 |
+| **baksmali** | `/usr/bin/baksmali` | 2.5.2 |
+| **aapt** | `/usr/bin/aapt` | — |
+| **aapt2** | `/usr/bin/aapt2` | — |
+| **apksigner** | `/usr/bin/apksigner` | — |
+| **zipalign** | `/usr/bin/zipalign` | — |
+| **dexdump** | `/usr/bin/dexdump` | — |
+
+- **jadx (completo):** `/opt/jadx/` (bin + lib)
+- **androguard (Python):** v4.1.4
+- **apkInspector (Python):** v1.3.6
+
+### Frida (Instrumentación)
+| Herramienta | Ruta | Versión |
+|---|---|---|
+| **frida** | `/home/usuario/.local/bin/frida` | 17.15.3 |
+| **frida-trace** | `/home/usuario/.local/bin/frida-trace` | — |
+| **frida-ps** | `/home/usuario/.local/bin/frida-ps` | — |
+| **frida-ls-devices** | `/home/usuario/.local/bin/frida-ls-devices` | — |
+| **frida-kill** | `/home/usuario/.local/bin/frida-kill` | — |
+
+- **Frida server:** `/home/usuario/frida-server-17.15.3-android-x86_64`
+- **Frida servers (HTTP Toolkit):** `~/.config/httptoolkit/frida-server-android-*.bin`
+- **Frida extras (rootAVD):** `/home/usuario/rootAVD/frida-server-17.15.3-android-x86_64`
+
+### Objection (Runtime Mobile Exploration)
+- Ruta: `/home/usuario/.local/bin/objection` (v1.12.5)
+- Depende de Frida.
+
+### Proxy / Traffic Interception
+| Herramienta | Ruta | Versión |
+|---|---|---|
+| **mitmproxy** | `/home/usuario/.local/bin/mitmproxy` | 12.2.3 |
+| **mitmdump** | `/home/usuario/.local/bin/mitmdump` | — |
+| **HTTP Toolkit** | `/usr/bin/httptoolkit` (Electron: `/opt/HTTP\ Toolkit/`) | 1.26.1 |
+
+- **HTTP Toolkit Pro (fuentes):** `/home/usuario/Httptoolkit-Pro/`
+
+### Device Interaction
+| Herramienta | Ruta | Versión |
+|---|---|---|
+| **adb** | `/usr/local/bin/adb` | 1.0.41 |
+| **fastboot** | `/usr/bin/fastboot` | — |
+| **scrcpy** | `/usr/bin/scrcpy` | 3.3.4 |
+
+- **rootAVD:** `/home/usuario/rootAVD/rootAVD.sh`
+
+### Java / Signing
+| Herramienta | Ruta |
+|---|---|
+| **jarsigner** | `/usr/bin/jarsigner` |
+| **keytool** | `/usr/bin/keytool` |
+| **openssl** | `/usr/bin/openssl` |
+
+### Utilidades
+| Herramienta | Ruta | Versión |
+|---|---|---|
+| **ngrok** | `/usr/local/bin/ngrok` | 3.39.9 |
+| **nmap** | `/usr/bin/nmap` | — |
+| **nc** | `/usr/bin/nc` | — |
+| **strings** | `/usr/bin/strings` | — |
+| **xxd** | `/usr/bin/xxd` | — |
+| **base64** | `/usr/bin/base64` | — |
+| **sqlite3** | `/usr/bin/sqlite3` | — |
+
+### Runtimes / Lenguajes
+| Herramienta | Ruta | Versión |
+|---|---|---|
+| **python3** | `/usr/bin/python3` | 3.13 |
+| **pip3** | `/usr/bin/pip3` | — |
+| **node / npm** | `/home/usuario/.nvm/versions/node/v26.3.1/bin/` | 26.3.1 |
+
+### radare2
+- Versión: **6.1.9** (compilado desde fuente)
+- Ejecutables en: `/usr/local/bin/` (`r2`, `radare2`, `rabin2`, `radiff2`, `rafind2`, `ragg2`, `rahash2`, `rarun2`, `rasm2`, `rax2`, `r2agent`, `r2p`, `r2r`)
+- Prefijo: `/usr/local/`
+- Librerías: `/usr/local/lib/`
+- Plugins del sistema: `/usr/local/lib/radare2/6.1.9/`
+- Plugins de usuario: `/home/usuario/.local/share/radare2/plugins`
+- Código fuente: `/home/usuario/radare2/`
+- Archivo de configuración: `/home/usuario/.radare2rc`
+- Historial: `/home/usuario/.cache/radare2/history`
+- Para usar: los binarios ya están en el PATH del sistema (`/usr/local/bin`).
 
 ### Git / GitHub
-- GitHub user: **jpelias**
-- GITHUB_TOKEN: `REDACTED`
-- Use for HTTPS git authentication (no SSH):
+- Usuario GitHub: **jpelias**
+- Token GITHUB_TOKEN: en `~/.bashrc` (exportado como `GITHUB_TOKEN`). En shells no interactivos, hacer `source ~/.bashrc` primero.
+- Usar para autenticación HTTPS en git, sin SSH:
   ```bash
+  source ~/.bashrc
   git remote set-url origin https://jpelias:$GITHUB_TOKEN@github.com/jpelias/repo.git
   ```
