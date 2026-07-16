@@ -1,3 +1,14 @@
+---
+name: apk-modding
+description: >
+  Modify and hack Android APKs: decompile (jadx, baksmali), patch smali to change license/premium defaults,
+  force method return values, neutralize modder-injected dialogs (yhf/liteapks patterns), reassemble DEX files,
+  repackage with proper ZIP handling, sign and install. Covers native .so analysis (Ghidra, radare2, Frida)
+  for apps with JNI_OnLoad signature/integrity checks, ARM64 hex patching, and Google API key replacement.
+  Includes case studies (GPS Emulator, CamScanner, YouTube Morphe, AdGuard, GPS Data).
+  Use for authorized testing, research, or modifying your own apps.
+---
+
 # APK Modding & Hacking Skill
 
 ## Golden Rule
@@ -26,11 +37,15 @@ Before applying any patch, verify ALL of these:
   baksmali d classesN.dex -o dexN_out/ for EVERY N
 
 □ Search for injected call sites in EVERY dexN_out/
-  grep -rn "ī/íì\|īi/ïi\|p000/p001\|a/b/pookie\|d6/a\|w6/b\|q6/c\|p6/e" dex*_out/ | grep invoke | grep -v "ī/íì/\|īi/ïi/"
+  grep -rn "invoke.*ī/íì\|invoke.*īi/ïi\|invoke.*p000/p001\|invoke.*a/b/pookie\|invoke.*d6/a\|invoke.*w6/b\|invoke.*q6/c\|invoke.*p6/e" dex*_out/ --include="*.smali" \
+    | grep -vE "^dex[0-9]*_out/ī/|^dex_out/ī/|^dex[0-9]*_out/īi/|^dex_out/īi/|^dex[0-9]*_out/p000/|^dex_out/p000/"
   → The calls are often in classes2.dex (MainActivity), not in the DEX with the injection
+  → The grep -v excludes results FROM files inside injected packages, not calls TO them
 
 □ List ALL injected methods (public/private/static/constructor/<clinit>)
-  find dexN_out/ī/íì/ -name "*.smali" | xargs grep "\.method "
+  for pkg in "ī/íì" "īi/ïi" "p000/p001" "p002i/p003i" "a/b/pookie" "d6/a"; do
+    find dex*_out/$pkg/ -name "*.smali" 2>/dev/null | xargs grep "\.method " 2>/dev/null
+  done
 
 □ Neutralize ALL of them — not just the obvious dialog methods
 
@@ -111,6 +126,8 @@ const-string v1, "premium"
 const/4 v2, 0x0              # ← change to 0x1 (false → true)
 invoke-interface {v0, v1, v2}, ...getBoolean...
 ```
+
+**⚠️ Limitation:** This approach patches the **stored default value**. If the app re-syncs preferences from Play Billing or a server, the stored value may be overwritten back to `false`. For apps with Play Billing, use Step 5d (hook getter by key name) instead, which intercepts the read and survives re-sync.
 
 **Python patcher script:**
 ```python
@@ -201,7 +218,8 @@ for root, dirs, files in os.walk('baksmali_out'):
         path = os.path.join(root, fname)
         with open(path) as f: content = f.read()
         
-        # Find all public static methods with Context parameter
+        # Collect ALL matches first (positions are valid against original content)
+        matches = []
         for m in re.finditer(r'\.method public static (\w+)\(Landroid/content/Context;\)(L[\w/$]+;|V)', content):
             method_name = m.group(1)
             return_type = m.group(2)  # 'V' for void, 'L...;' for object
@@ -221,14 +239,25 @@ for root, dirs, files in os.walk('baksmali_out'):
             class_name = fname.replace('.smali', '')
             pkg = root.replace('baksmali_out/', '')
             
-            # Replace with no-op
+            matches.append((sig_start, end_pos + len('.end method'), sig_line,
+                            return_type, pkg, class_name, method_name))
+        
+        if not matches: continue
+        
+        # Apply patches from BOTTOM to TOP to preserve positions
+        for sig_start, end_pos, sig_line, return_type, pkg, class_name, method_name in reversed(matches):
             if return_type == 'V':
                 new_body = f'{sig_line}\n    .registers 1\n    return-void\n.end method'
             else:
-                new_body = f'{sig_line}\n    .registers 2\n    new-instance v0, L{pkg}/{class_name};\n    invoke-direct {{v0}}, L{pkg}/{class_name};-><init>()V\n    return-object v0\n.end method'
-            
-            content = content[:sig_start] + new_body + content[end_pos + len('.end method'):]
-            with open(path, 'w') as f: f.write(content)
+                new_body = (f'{sig_line}\n    .registers 2\n'
+                            f'    new-instance v0, L{pkg}/{class_name};\n'
+                            f'    invoke-direct {{v0}}, L{pkg}/{class_name};-><init>()V\n'
+                            f'    return-object v0\n.end method')
+            content = content[:sig_start] + new_body + content[end_pos:]
+        
+        # Write file ONCE after all patches applied
+        with open(path, 'w') as f: f.write(content)
+        for _, _, _, _, pkg, class_name, method_name in matches:
             print(f'Neutralized: {pkg}/{class_name}->{method_name}(Context)')
 ```
 
@@ -251,6 +280,70 @@ for root, dirs, files in os.walk('baksmali_out'):
 
 **⚠️ After neutralizing, ALSO remove `invoke-static` calls from the Activity to these methods.** Combined with neutralization, this double-guarantees the dialog won't appear.
 
+### Step 5d: Patching strategy — Hook getter by key name
+
+Changing `const/4 v2, 0x0` to `0x1` works for simple apps, but some apps re-sync preferences from Play Billing or a server, overwriting your patched default. A more resilient approach is to **intercept the getter by key name** so it always returns `true` regardless of the stored value.
+
+In smali, inject at the start of the `getBoolean` method:
+
+```smali
+.method public getBoolean(Ljava/lang/String;Z)Z
+    .registers 3
+    const-string v0, "KEY_IS_PREMIUM"
+    invoke-virtual {p1, v0}, Ljava/lang/String;->endsWith(Ljava/lang/String;)Z
+    move-result v0
+    if-eqz v0, :original
+    const/4 v0, 0x1
+    return v0
+    :original
+    # ... original method body continues here
+```
+
+This survives Play Billing re-sync because it intercepts the **read**, not the stored value. The `endsWith` check allows matching key suffixes even if the full key includes a package prefix.
+
+**Source:** `arandomhooman/hoomans-morphe-patches` — `EnablePremiumPatch.kt` (BlockerHero)
+
+### Step 5e: Patching strategy — Suppress re-login dialogs and auth toasts
+
+When you force premium features without a valid login, the app may:
+1. Try to sync with the server → gets 401 → launches a `ReLoginDialogActivity`
+2. Show "Unauthenticated" toasts repeatedly
+
+**Suppress re-login broadcast** (fake UID causes server 401):
+```smali
+# Find the method that sends re-login broadcast, replace with:
+.method ...sendReLoginBroadcast()V
+    .registers 0
+    return-void
+.end method
+```
+
+**Suppress ReLoginDialogActivity launch**:
+```smali
+# Find the method that launches the dialog, replace with:
+.method ...launchReLoginDialog()V
+    .registers 0
+    return-void
+.end method
+```
+
+**Suppress auth-error toasts only** (leave other toasts working):
+```smali
+# At the start of the toast helper method:
+if-eqz p1, :show
+const-string v0, "uthenticat"          # matches "Authentication" / "Unauthenticated"
+invoke-virtual {p1, v0}, Ljava/lang/String;->contains(Ljava/lang/CharSequence;)Z
+move-result v0
+if-eqz v0, :show
+return-void
+:show
+# ... original toast code continues
+```
+
+**Sources:**
+- `rushiranpise/morphe-patches` — `YearlyUnlockPatch.kt` (CamScanner): suppresses `SendReLoginBroadcast` + `LaunchReLoginDialog`
+- `arandomhooman/hoomans-morphe-patches` — `EnablePremiumPatch.kt` (BlockerHero): suppresses auth-error toasts
+
 ### Step 6: Reassemble DEX files
 
 ```bash
@@ -267,12 +360,23 @@ done
 
 ### Step 7: Repackage the APK
 
+**⚠️ Compression strategy — use mixed STORE/DEFLATE, not all-STORE:**
+
+| File type | Compression | Why |
+|---|---|---|
+| `.so` (native libs) | `ZIP_STORED` | Required by Android; compressed .so causes `dlopen` failures |
+| `resources.arsc` | `ZIP_STORED` | **Android 11+ requirement** — compressed resources.arsc causes install failure |
+| DEX files (`classes*.dex`) | `ZIP_STORED` with Python `zipfile` | Python's `zipfile.ZIP_DEFLATED` corrupts APK ZIP structure when building from scratch (confirmed in YouTube Morphe tests). If using `apktool b` or `zip` command, DEFLATED works fine for DEX — the issue is Python-specific, not DEFLATED itself |
+| Everything else | `ZIP_DEFLATED` | Smaller APK, no issues with non-native/non-resource files |
+
 ```python
 import zipfile, os, shutil
 
 ORIG = 'original.apk'
 OUT = 'hacked.apk'
 SIG_EXTS = {'.SF', '.RSA', '.DSA', '.EC'}
+STORE_EXTS = {'.so', '.arsc'}
+STORE_NAMES = {'resources.arsc'}
 
 # Only replace patched DEXes. Keep all other files ORIGINAL.
 patched_dexes = {
@@ -283,7 +387,7 @@ patched_dexes = {
 new_data = {k: open(v, 'rb').read() for k, v in patched_dexes.items() if os.path.exists(v)}
 
 with zipfile.ZipFile(ORIG, 'r') as zin:
-    with zipfile.ZipFile(OUT, 'w', zipfile.ZIP_DEFLATED) as zout:
+    with zipfile.ZipFile(OUT, 'w') as zout:
         for item in zin.infolist():
             fn = item.filename
             # CRITICAL: Only strip signature files, KEEP services/
@@ -292,11 +396,25 @@ with zipfile.ZipFile(ORIG, 'r') as zin:
                 base = os.path.basename(fn).upper()
                 if ext in SIG_EXTS or base == 'MANIFEST.MF':
                     continue
-            if fn in new_data:
-                zout.writestr(item, new_data[fn])
+            # Determine compression: STORE for .so, resources.arsc, DEX; DEFLATE for rest
+            if fn in STORE_NAMES or os.path.splitext(fn)[1].lower() in STORE_EXTS or fn.endswith('.dex'):
+                compress = zipfile.ZIP_STORED
             else:
-                zout.writestr(item, zin.read(item.filename))
+                compress = zipfile.ZIP_DEFLATED
+            if fn in new_data:
+                zout.writestr(item, new_data[fn], compress_type=compress)
+            else:
+                zout.writestr(item, zin.read(item.filename), compress_type=compress)
 ```
+
+**After repackaging, always run zipalign before signing:**
+```bash
+zipalign -p -f 4 hacked.apk hacked_aligned.apk
+```
+
+`-p` aligns uncompressed `.so` files to page boundaries (required for Android 15+).
+
+**Source:** `test1ng-guy/android-sandbox-explorer` — `repack.py`
 
 ### Step 8: Sign and install
 
@@ -309,13 +427,46 @@ KS="$HOME/.android/debug.keystore"
 
 apksigner sign --ks "$KS" --ks-pass pass:android --ks-key-alias androiddebugkey \
     --v1-signing-enabled true --v2-signing-enabled true \
-    --out hacked_signed.apk hacked.apk
+    --out hacked_signed.apk hacked_aligned.apk
 
 # Disable Play Protect verification
 adb shell settings put global package_verifier_enable 0
 adb install hacked_signed.apk
 adb shell settings put global package_verifier_enable 1
 ```
+
+**⚠️ Always sign the zipaligned APK (`hacked_aligned.apk`), not the unaligned one.** Signing before zipalign invalidates the alignment.
+
+### Split APK handling
+
+Many modern apps ship as split APKs (`base.apk` + `split_config.arm64_v8a.apk` + `split_config.xxhdpi.apk` etc.). To handle them:
+
+```bash
+# 1. Pull all splits from device
+adb shell pm path com.example.app
+# Output:
+#   package:/data/app/.../base.apk
+#   package:/data/app/.../split_config.arm64_v8a.apk
+#   package:/data/app/.../split_config.en.apk
+adb pull /data/app/.../base.apk original/
+adb pull /data/app/.../split_*.apk original/
+
+# 2. Patch base.apk normally (smali patches go here)
+# 3. If injecting a .so, inject into the architecture split (split_config.arm64_v8a.apk)
+
+# 4. Sign ALL APKs with the same key
+for apk in original/base.apk original/split_*.apk; do
+    apksigner sign --ks "$KS" --ks-pass pass:android \
+        --ks-key-alias androiddebugkey \
+        --v1-signing-enabled true --v2-signing-enabled true \
+        --out "signed/$(basename $apk)" "$apk"
+done
+
+# 5. Install all at once
+adb install-multiple signed/base.apk signed/split_*.apk
+```
+
+**Source:** `test1ng-guy/android-sandbox-explorer` — `repack.py`
 
 ---
 
@@ -336,7 +487,7 @@ The modder `yhf` injects these packages in ALL their modded APKs:
 
 **⚠️ Package names change across versions.** Always use behavioral detection:
 ```bash
-grep -rn "Typeface.createFromAsset\|AlertDialog.Builder.*create\(\)" jadx_out/sources/ \
+grep -rn "Typeface.createFromAsset\|AlertDialog.Builder.*create\(\)" jadx_out/sources/ --include="*.java" \
   | grep -v "androidx\|com/google\|com/example"
 ```
 
@@ -370,7 +521,7 @@ Real-world examples. See individual files in [cases/](cases/):
 | CamScanner 7.20.5 | [camscanner.md](cases/camscanner.md) | Java light protection, 3 DEX patches |
 | GPS Data 3.1.03 | [gps-data.md](cases/gps-data.md) | yhf renamed `p000/p001/` — behavioral detection |
 | YouTube Morphe | [youtube-morphe.md](cases/youtube-morphe.md) | ZIP corruption, NOT native checks |
-| AdGuard 4.14.0 | [adguard.md](cases/adguard.md) | Call sites in DIFFERENT DEX |
+| AdGuard 4.14.0 | [adguard.md](cases/adguard.md) | Call sites in DIFFERENT DEX + 5-layer license state |
 
 ---
 
@@ -392,7 +543,7 @@ Key observations:
 - Splash screen may appear briefly (false positive)
 - App dies when native libs load
 - `zip -0` (STORE) fixes ZIP structure issues but NOT native checks
-- Re-signing alone is not sufficient
+- Re-signing alone works if you don't modify DEX content (Test 1 ✅). Re-signing fails if you need to modify DEX content, because `libgoogle3.so` validates DEX integrity hash
 
 ### How to confirm it's a signature check
 
@@ -473,25 +624,28 @@ Modern YouTube versions require these libs for core functionality — this techn
 
 **Tested on YouTube 21.26.364 (Morphe) with AOSP testkey:**
 
+**⚠️ Important:** Tests 2-6 were performed on the Morphe-modified APK, which already has the native DEX integrity check bypassed by Morphe's own patches. On **stock YouTube** (without Morphe's native patches), modifying DEX content would trigger `libgoogle3.so`'s hash check regardless of repackaging method.
+
 | # | Method | DEX modified? | Result |
 |---|---|---|---|
 | 1 | `apksigner sign` direct (no content change) | No | ✅ Works |
-| 2 | Extract + `zip -0` + sign | Yes | ✅ Works |
-| 3 | `zipfile.ZIP_DEFLATED` + sign | Yes | ❌ ZIP corruption |
-| 4 | `zipfile.ZIP_STORED` + sign | Yes | ✅ Works |
+| 2 | Extract + `zip -0` + sign | Yes | ✅ Works (Morphe) |
+| 3 | `zipfile.ZIP_DEFLATED` + sign | Yes | ❌ ZIP corruption (Python zipfile issue, not native check) |
+| 4 | `zipfile.ZIP_STORED` + sign | Yes | ✅ Works (Morphe) |
 | 5 | Hex-edit raw DEX + apkzlib | Yes | ❌ DEX checksum invalid |
-| 6 | **baksmali → smali + apkzlib** + sign | Yes | ✅ **Works** |
+| 6 | **baksmali → smali + apkzlib** + sign | Yes | ✅ **Works** (Morphe) |
 | 7 | apkzlib noop (realign only) + sign | No | ✅ Works |
 | 8 | apkzlib delete+add (identical data) + sign | No | ✅ Works |
 
-**Conclusion**: The problem was NEVER native signature verification. `libgoogle3.so` and `libelements.so` are **identical** between stock and Morphe (SHA256 verified). The crashes were caused by:
-1. Python `zipfile` corrupting ZIP structure → use `zip -0` or apkzlib instead
-2. Hex-editing raw DEX leaving invalid checksums → use baksmali/smali for proper DEX generation
-3. Not a signature check — YouTube's native libs don't validate the APK certificate in this version
+**Conclusion**: YouTube's native libs do NOT validate the APK certificate (signature). However, `libgoogle3.so` (58 MB) **does validate DEX content integrity** on stock YouTube — it stores a hash of the DEX files and compares it at `JNI_OnLoad`. Tests 2-6 above passed because they were run on the Morphe APK, which already bypasses this check. On stock YouTube, the same DEX modifications would trigger `abort()`.
 
-**Conclusion**: YouTube's `libgoogle3.so` (58 MB) validates DEX content integrity (not ZIP structure, not APK signature). The native library stores a hash of the DEX files and compares it at `JNI_OnLoad`. Even Google's own `apkzlib` (which perfectly preserves ZIP structure) triggers the check when DEX content changes.
+The crashes observed during testing were caused by two separate issues:
+1. **ZIP corruption** from Python `zipfile.ZIP_DEFLATED` → use `zip -0` (STORE), `zipfile.ZIP_STORED`, or apkzlib instead. This is a Python `zipfile` bug, not a DEFLATED compression issue — `apktool b` and `zip` command handle DEFLATED correctly.
+2. **DEX checksum invalidation** from hex-editing raw DEX → use baksmali/smali for proper DEX generation
 
-**The three real solutions for Google apps:**
+`libgoogle3.so` and `libelements.so` are **identical** between stock and Morphe (SHA256 verified) — no native patches are needed for re-signing, only for DEX content changes.
+
+**The four real solutions for Google apps with DEX integrity checks:**
 1. **Patch the .so** — find the DEX hash check in `libgoogle3.so` (Ghidra → trace `abort()` XREFs → patch or NOP the check)
 2. **Update the expected hash** — find where the expected hash is stored in the .so and update it to match the modified DEX
 3. **Runtime hooking** — LSPosed/Frida intercept validation at runtime (not redistributable)
@@ -574,7 +728,7 @@ See [google-apis.md](google-apis.md) for Google Maps/Places API key replacement,
 | curl | `/usr/bin/curl` | Download AOSP testkey |
 | base64 | `/usr/bin/base64` | Decode AOSP gitiles blobs |
 | frida | `~/.local/bin/frida` | Runtime hooking (dynamic analysis) |
-| apktool | `/usr/bin/apktool` | Decode/rebuild APK resources |
+| apktool | `/usr/bin/apktool` | Decode/rebuild APK resources + smali (alternative to baksmali/smali for apps needing resource/manifest edits) |
 | ghidra | `/opt/ghidra/` | ARM64 disassembly + decompilation |
 
 ## Native analysis workflow (`.so` patches) — from crash to fix
@@ -637,19 +791,6 @@ Symbol Tree → search:
   JNI_OnLoad
   JNI_OnLoad_libelements
 ```
-
-### Step 6: Find the condition
-
-In Ghidra's decompiler, trace from `JNI_OnLoad` looking for:
-```c
-abort();
-__android_log_assert(...);
-__assert2(...);
-raise(SIGABRT);
-exit(...);
-```
-
-The goal is NOT the abort — it's finding what CHECK triggers it.
 
 ### Step 5: Follow the execution to abort()
 
@@ -826,6 +967,154 @@ ADB        → logcat, tombstones, push/pull
 
 ---
 
+## Morphe patcher — programmatic alternative to manual smali
+
+Manual smali editing works but is fragile: offsets change between versions, and patches must be redone for every update. The **Morphe patcher** ecosystem provides a Kotlin DSL that automates patching with fingerprints and version-agnostic method matching.
+
+### Repositories
+
+| Repo | Stars | Description |
+|---|---|---|
+| `MorpheApp/morphe-manager` | ★6341 | Morphe app patcher for Android (the engine) |
+| `rushiranpise/morphe-patches` | ★173 | 50+ app patches maintained (AdGuard, CamScanner, AccuWeather, etc.) |
+| `arandomhooman/hoomans-morphe-patches` | ★92 | Additional patches (BlockerHero, etc.) |
+| `Paresh-Maheshwari/morphe-ai` | ★114 | AI-powered multi-agent pipeline for APK analysis and patch writing |
+
+### How it works
+
+Instead of manually editing smali, you define a `bytecodePatch` with `Fingerprint` objects that locate methods by signature patterns, then inject instructions:
+
+```kotlin
+val enablePremiumPatch = bytecodePatch(
+    name = "Enable Premium",
+    description = "Unlocks premium features.",
+) {
+    compatibleWith(Compatibility(
+        name = "BlockerHero",
+        packageName = "com.blockerhero",
+        targets = listOf(AppTarget("1.5.0")),
+    ))
+
+    execute {
+        // Hook getBoolean by key name — survives Play Billing re-sync
+        PrefsGetBooleanFingerprint.method.addInstructionsWithLabels(
+            0,
+            """
+                const-string v0, "com.blockerhero.KEY_IS_PREMIUM"
+                invoke-virtual {p1, v0}, Ljava/lang/String;->endsWith(Ljava/lang/String;)Z
+                move-result v0
+                if-eqz v0, :original
+                const/4 v0, 0x1
+                return v0
+            """,
+            ExternalLabel("original", method.getInstruction(0)),
+        )
+    }
+}
+```
+
+### When to use Morphe patcher vs manual smali
+
+| | Manual smali | Morphe patcher |
+|---|---|---|
+| One-off patch | ✅ Faster | Overkill |
+| Maintaining patches across versions | ❌ Fragile | ✅ Fingerprints adapt |
+| Sharing with community | ❌ Hard to distribute | ✅ Versionable, shareable |
+| Apps with many patch targets | ❌ Tedious | ✅ Scales well |
+| Learning how patches work | ✅ Transparent | ❌ Abstracted |
+
+---
+
+## Runtime signature bypass (PMS Hook, IO redirection)
+
+When an app performs signature verification at runtime (not in native code), there are two runtime techniques that avoid patching the app entirely. These require root + Xposed/LSPosed or a virtualization framework.
+
+### PMS Hook (PM Proxy)
+
+Hook `ActivityThread.sPackageManager` and `ApplicationPackageManager.mPM` via Java dynamic proxy to return a spoofed signature when the app calls `getPackageInfo(GET_SIGNATURES)`:
+
+```java
+public static void hookPMS(Context context, String originalSignature, String appPkgName) {
+    Class<?> activityThreadClass = Class.forName("android.app.ActivityThread");
+    Method currentActivityThreadMethod = activityThreadClass.getDeclaredMethod("currentActivityThread");
+    Object currentActivityThread = currentActivityThreadMethod.invoke(null);
+
+    Field sPackageManagerField = activityThreadClass.getDeclaredField("sPackageManager");
+    sPackageManagerField.setAccessible(true);
+    Object sPackageManager = sPackageManagerField.get(currentActivityThread);
+
+    Class<?> iPackageManagerInterface = Class.forName("android.content.pm.IPackageManager");
+    Object proxy = Proxy.newProxyInstance(
+        iPackageManagerInterface.getClassLoader(),
+        new Class<?>[]{iPackageManagerInterface},
+        new PmsHookBinderInvocationHandler(sPackageManager, originalSignature, appPkgName, 0)
+    );
+
+    // Replace sPackageManager in ActivityThread
+    sPackageManagerField.set(currentActivityThread, proxy);
+
+    // Replace mPM in ApplicationPackageManager
+    PackageManager pm = context.getPackageManager();
+    Field mPmField = pm.getClass().getDeclaredField("mPM");
+    mPmField.setAccessible(true);
+    mPmField.set(pm, proxy);
+}
+```
+
+The `InvocationHandler` intercepts `getPackageInfo` calls and returns a `PackageInfo` with the original signature bytes.
+
+**Source:** `ZJ595/AndroidReverse` (★2222) — Lesson 6: 签名校验对抗的多种姿势
+
+### IO redirection
+
+Redirect file reads so that when the app opens its own APK to verify the signature, it reads the **original unmodified APK** instead of the patched one.
+
+Tools:
+- **VirtualApp** (`asLody/VirtualApp`) — virtualization engine that can intercept file I/O
+- **Ratel** (`virjarRatel/ratel-core`) — RAT framework with IO redirection support
+- **SVC TraceHook** — ptrace + seccomp sandbox for syscall-level redirection
+
+**Source:** `ZJ595/AndroidReverse` (★2222) — Lesson 6: IO重定向
+
+### Triangle verification (三角校验)
+
+A more complex pattern than simple circular verification:
+
+```
+libnative.so ──checks──> classes.dex
+classes.dex  ──checks──> dynamically loaded dex (extracted at runtime, deleted after check)
+dynamic dex  ──checks──> libnative.so
+```
+
+Each component verifies the next in a triangle. Patching one breaks the chain. Requires patching all three simultaneously or using runtime hooks.
+
+**Source:** `ZJ595/AndroidReverse` (★2222) — Lesson 6
+
+---
+
+## Android 16+ Developer Verifier bypass
+
+Starting September 2026, `com.google.android.verifier` (a pre-installed system service) blocks APK installs on certified Android 16+ devices in BR/ID/SG/TH when the signing certificate isn't in Google's developer registry. Policy is controlled by phenotype flags pulled from Google's servers.
+
+**Impact:** Sideloading patched APKs on Android 16+ certified devices in affected regions may be blocked even with unknown sources enabled.
+
+**Bypass layers (DEX patching of the verifier app):**
+
+| Layer | Method | Patch |
+|---|---|---|
+| 1 | `onVerificationRequired` / `onVerificationRetry` | Call `reportVerificationBypassed(1)` immediately |
+| 2 | Platform policy flag (45681539) | Return `Long(0)` = NONE (no blocking) |
+| 3 | Forced backport flag (45749715) | Return `Boolean.TRUE` (short-circuit path) |
+
+**⚠️ Requirements:**
+- Patched verifier APK must be installed as a **system app** (replacing the original) via Magisk module or ADB with root
+- The verifier holds `DEVELOPER_VERIFICATION_AGENT` privilege
+- ADB installs are exempt from verification regardless
+
+**Source:** `rushiranpise/morphe-patches` — `AndroidVerifierBypassPatch.kt`
+
+---
+
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
@@ -839,9 +1128,47 @@ ADB        → logcat, tombstones, push/pull
 | App crashes after smali roundtrip on unmodified DEX | baksmali/smali corrupts cross-DEX references | Only reassemble DEXes you patched, keep others original |
 | `Authorization failure` in Google Maps | Re-signed APK, API key restricts SHA-1 fingerprint | Sign with AOSP testkey + use unrestricted API key |
 | `INVALID_ARGUMENT` from Google Maps SDK | API key has package restriction or Maps SDK not enabled | Find API key without restrictions (see Google APIs section) |
-| Liteapks markers not found but dialog appears | Modder changed package names (`p000/p001/` instead of `ī/íì/`) | Use behavioral detection: `grep -rn "Typeface.createFromAsset" jadx_out/` |
+| Liteapks markers not found but dialog appears | Modder changed package names (`p000/p001/` instead of `ī/íì/`) | Use behavioral detection: `grep -rn "Typeface.createFromAsset" jadx_out/ --include="*.java"` |
 | Modder injection found but `strings` shows nothing | Encrypted/obfuscated strings in DEX | Decompile with jadx+baksmali, search smali by behavior |
 | YouTube shows `adcontext=` in QOE pings | Mod didn't fully disable ad system | Check account/premium smali patches are applied |
 | `ClassNotFoundException: Executor$CppProxy` | Python `zipfile` corrupted ZIP structure | Use `zip -0` (STORE) or apkzlib for repackaging |
 | Hex-edited DEX causes crash but smali'd DEX works | Raw DEX has invalid internal checksum (Adler32/SHA1) | Always use baksmali→smali, never hex-edit DEX directly |
 | Liteapks dialog still appears after URL replacement | Dialog class (`com/zx/cmz/Strings` + `LB`) fetches content from multiple sources | Find ALL references: URLs, promotional strings, dialog trigger in MainActivity |
+| App forces re-login after premium patch | Fake UID causes server 401 → `ReLoginDialogActivity` | Suppress `sendReLoginBroadcast` and `launchReLoginDialog` (see Step 5e) |
+| "Unauthenticated" toast spam | Premium toggle syncs with server → 401 | Suppress auth-error toasts only (see Step 5e) |
+| `INSTALL_FAILED` on Android 16+ in BR/ID/SG/TH | `com.google.android.verifier` blocks unsigned APKs | Patch verifier or push as system app (see Android 16+ section) |
+| `resources.arsc` compressed → install fails on Android 11+ | Python `ZIP_DEFLATED` on `resources.arsc` | Use `ZIP_STORED` for `resources.arsc` and `.so` (see Step 7) |
+
+---
+
+## References / Sources
+
+### Morphe patcher ecosystem
+- [MorpheApp/morphe-manager](https://github.com/MorpheApp/morphe-manager) (★6341) — Morphe app patcher engine
+- [rushiranpise/morphe-patches](https://github.com/rushiranpise/morphe-patches) (★173) — 50+ app patches (AdGuard, CamScanner, AccuWeather, etc.)
+- [arandomhooman/hoomans-morphe-patches](https://github.com/arandomhooman/hoomans-morphe-patches) (★92) — Additional patches (BlockerHero)
+- [Paresh-Maheshwari/morphe-ai](https://github.com/Paresh-Maheshwari/morphe-ai) (★114) — AI-powered APK patching pipeline
+
+### Android reverse engineering courses
+- [ZJ595/AndroidReverse](https://github.com/ZJ595/AndroidReverse) (★2222) — 《安卓逆向这档事》 — Lesson 6: signature verification bypass, PMS Hook, IO redirection, triangle verification
+- [Evil0ctal/AndroidReverse101](https://github.com/Evil0ctal/AndroidReverse101) — Indonesian Android RE course (smali basics)
+
+### Modding tool collections
+- [jbro129/android-modding](https://github.com/jbro129/android-modding) (★739) — Curated list of Android modding tools, templates, and tutorials
+- [gmh5225/awesome-game-security](https://github.com/gmh5225/awesome-game-security) (★3159) — Game security resources, includes android-modding archive
+- [alphaSeclab/android-security](https://github.com/alphaSeclab/android-security) (★354) — Android security resources
+
+### Repackaging tools
+- [test1ng-guy/android-sandbox-explorer](https://github.com/test1ng-guy/android-sandbox-explorer) — `repack.py`: split APK handling, zipalign, resources.arsc uncompressed, mixed compression
+
+### Runtime bypass frameworks
+- [asLody/VirtualApp](https://github.com/asLody/VirtualApp) — Virtual engine for Android (IO redirection)
+- [virjarRatel/ratel-core](https://github.com/virjarRatel/ratel-core) — RAT framework with IO redirection
+- [fourbrother/HookPmsSignature](https://github.com/fourbrother/HookPmsSignature) — PMS signature hook
+
+### Reverse engineering tools
+- [Konloch/bytecode-viewer](https://github.com/Konloch/bytecode-viewer) (★15565) — Java/Android APK RE suite
+- [vaibhavpandeyvpz/apkstudio](https://github.com/vaibhavpandeyvpz/apkstudio) (★4283) — Cross-platform APK RE IDE
+- [APKLab/APKLab](https://github.com/APKLab/APKLab) (★3911) — Android RE workbench for VS Code
+- [JesusFreke/smali](https://github.com/JesusFreke/smali) — baksmali/smali assembler/disassembler
+- [iBotPeaches/Apktool](https://github.com/iBotPeaches/Apktool) — APK decode/rebuild tool
