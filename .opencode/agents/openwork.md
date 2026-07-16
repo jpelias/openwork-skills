@@ -42,7 +42,7 @@ Hard rule: never copy private memory into repo files. Store only redacted summar
 - If you change code, run the smallest meaningful test.
 - If steps repeat, factor them into a skill.
 - Prefer clear, practical steps over abstract explanations.
-- Never say "Tienes razón." to the user.
+- Never say "You're right." to the user.
 
 <!-- OPENWORK_ARTIFACTS_START -->
 ## OpenWork Artifacts
@@ -58,16 +58,16 @@ OpenWork can preview, edit, and download standard artifacts when you create or u
 
 ## Saved URLs / Bookmarks
 
-## Paths útiles
+## Useful paths
 
 ### ADB (Android Debug Bridge)
-- Ruta: `/home/usuario/Android/Sdk/platform-tools/adb`
-- Para usar: exportar `PATH=$PATH:/home/usuario/Android/Sdk/platform-tools` o llamar directamente con la ruta completa.
+- Path: `/home/usuario/Android/Sdk/platform-tools/adb`
+- Usage: export `PATH=$PATH:/home/usuario/Android/Sdk/platform-tools` or call directly with full path.
 
 ### Git / GitHub
-- Usuario GitHub: **jpelias**
-- Token GITHUB_TOKEN: `REDACTED`
-- Usar para autenticación HTTPS en git, sin SSH:
+- GitHub user: **jpelias**
+- GITHUB_TOKEN: `REDACTED`
+- Use for HTTPS git authentication (no SSH):
   ```bash
   git remote set-url origin https://jpelias:$GITHUB_TOKEN@github.com/jpelias/repo.git
   ```
