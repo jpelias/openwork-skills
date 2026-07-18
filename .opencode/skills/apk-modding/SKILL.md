@@ -55,6 +55,7 @@ Scripts incluidos en `.opencode/skills/apk-modding/scripts/`:
 - `neutralize_yhf_dialogs.py` — neutralizar diálogos de modders
 - `ziprepack.py` — reempaquetar con compresión correcta
 - `strip_sign_and_sign.py` — limpiar firmas, alinear, firmar
+- `nightmare.py` — parcheo ARM64 por hex (buscar/reemplazar instrucciones en .so)
 
 ---
 
