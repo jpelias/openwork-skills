@@ -5,8 +5,10 @@ description: >
   force method return values, neutralize modder-injected dialogs (yhf/liteapks patterns), reassemble DEX files,
   repackage with proper ZIP handling, sign and install. Covers native .so analysis (Ghidra, radare2, Frida)
   for apps with JNI_OnLoad signature/integrity checks, ARM64 hex patching, and Google API key replacement.
-  Includes case studies (GPS Emulator, CamScanner, YouTube Morphe, AdGuard, GPS Data).
-  Use for authorized testing, research, or modifying your own apps.
+  Includes case studies (GPS Emulator, CamScanner, YouTube Morphe, AdGuard, GPS Data), Morphe patcher
+  integration, PairipCore/Dex2C bypass, Frida Gadget embedding, signature killers (ApkSignatureKiller,
+  APKKiller, SRPatch-X), virtual engines (VirtualApp, LSPatch), Unity/IL2CPP modding, and a curated
+  ecosystem of 50+ modding tools. Use for authorized testing, research, or modifying your own apps.
 ---
 
 # APK Modding & Hacking Skill
@@ -522,6 +524,7 @@ Real-world examples. See individual files in [cases/](cases/):
 | GPS Data 3.1.03 | [gps-data.md](cases/gps-data.md) | yhf renamed `p000/p001/` — behavioral detection |
 | YouTube Morphe | [youtube-morphe.md](cases/youtube-morphe.md) | ZIP corruption, NOT native checks |
 | AdGuard 4.14.0 | [adguard.md](cases/adguard.md) | Call sites in DIFFERENT DEX + 5-layer license state |
+| Liteapks Store 1.0.18 | [liteapks-store.md](cases/liteapks-store.md) | Self-protected app: shell + encrypted payload + InMemoryDexClassLoader |
 
 ---
 
@@ -1115,6 +1118,195 @@ Starting September 2026, `com.google.android.verifier` (a pre-installed system s
 
 ---
 
+## PairipCore license bypass
+
+PairipCore (`libpairipcore.so`) is a Google Play license verification library that encrypts app strings in a vault and validates the APK signature against the Play Store. It wraps the app's `Application` class via `com.pairip.application.Application`.
+
+### Detection
+
+```bash
+# Check for Pairip presence
+unzip -p app.apk classes*.dex | strings -a | grep -c "pairip"
+# > 0 = Pairip present
+
+# Check for libpairipcore.so
+unzip -l app.apk | grep -i "pairipcore"
+```
+
+### How it works
+
+```
+Application.attachBaseContext()
+  → VMRunner.setContext(Context)        # Native VM init
+  → SignatureCheck.verifyIntegrity(Context)  # APK signature check
+  → VMRunner.invoke(id, args)          # Encrypted string decryption
+      → libpairipcore.so               # Native VM execution
+```
+
+The `VMRunner.invoke(String, Object[])` method is the central API — it's called from hundreds of places across the app (ads SDKs, analytics, Firebase, WorkManager) to decrypt strings at runtime. These strings are encrypted in the DEX and can only be decrypted by the native VM.
+
+### Bypass strategies
+
+#### Strategy A: Minimal bypass (smali only)
+
+If the app only has Pairip for license verification (no vault dependencies):
+
+1. Neutralize `SignatureCheck.verifyIntegrity(Context)V` → `return-void`
+2. Neutralize `StartupLauncher.launch()V` → `return-void`
+
+**⚠️ Do NOT neutralize `VMRunner.invoke` or `VMRunner.setContext`** — the entire app depends on them for string decryption.
+
+#### Strategy B: Full bypass (when vault strings are compromised)
+
+If the APK is already modded and vault strings are empty/corrupted, use the multi-layer approach:
+
+| Layer | Action | Purpose |
+|---|---|---|
+| 1 | Replace `Application` class in AndroidManifest | Remove Pairip's Application wrapper entirely |
+| 2 | Patch `VMRunner.invoke` to return null | Prevent crash when vault strings are empty |
+| 3 | Patch protobuf field lookup for empty names | `getDeclaredField("")` → return first field |
+| 4 | Create `SafeExceptionHandler` | Catch NPE from empty vault strings on background threads |
+| 5 | Wrap crypto init in try-catch | `TinkConfig.register()` fails with empty algorithm names |
+| 6 | Stub `FlutterSecureStorage` → `success(null)` | EncryptedSharedPreferences fails with empty cipher |
+| 7 | Patch `getSystemService()` vault strings | Restore "connectivity", "wifi", "location", etc. |
+| 8 | Auto-detect Kotlin property vault strings | Restore property names from getter signatures |
+
+#### Strategy C: Morphe patcher
+
+The Morphe ecosystem has dedicated patches:
+
+```kotlin
+// hoo-dles/morphe-patches — DisableLicenseCheckPatch.kt
+ProcessLicenseResponseFingerprint.method.addInstruction(0, "const/4 p1, 0x0")
+ValidateLicenseResponseFingerprint.method.returnEarly()
+```
+
+### Automated tools
+
+| Tool | Language | Coverage |
+|---|---|---|
+| `TechnoIndian/RKPairip` | Python | Full automated pipeline (decompile → patch → rebuild → sign) |
+| `carpedm20/android-hack/patch_pairip.sh` | Bash | Shell script for quick patching |
+| `hoo-dles/morphe-patches` | Kotlin | Morphe patch for license check bypass |
+| `rushiranpise/morphe-patches/PairIp.kt` | Kotlin | Shared Pairip utilities |
+
+**Sources:**
+- `Rt39/Merc_translation_andriod` — `PAIRIP_BYPASS_GUIDE.md` (comprehensive guide)
+- `TechnoIndian/RKPairip` — Automated Python bypass tool
+- `hoo-dles/morphe-patches` — `DisableLicenseCheckPatch.kt`
+- `carpedm20/android-hack` — `patch_pairip.sh`
+
+---
+
+## Dex2C / VM shell dead-ends
+
+Some modders use Dex2C compilers or VM shells that translate DEX bytecode to native ARM64 code inside a `.so` library. The original app logic (including dialogs, license checks, and app initialization) runs inside a virtual machine in native code — **completely invisible to static smali analysis**.
+
+### Modder profiles
+
+| Modder | Signature | Technique | Static bypass possible? |
+|---|---|---|---|
+| **zhou45** | `libstub.so` + `assets/protected_by_np` | YJ-Dex2C VM shell (`yjaq.xyz`) | ❌ No — DEX encrypted in `assets/classes0.jar` |
+| **yhf / liteapks** | `ī/íì/`, `īi/ïi/`, `p000/p001/` | Java dialog injection + `libstub.so` for native dialogs | ⚠️ Partial — Java dialogs yes, native dialogs no |
+| **辰夕** | `libcxapkmod.so` + `assets/cxapkDex/*.Epic` | Native code injection | ❌ No |
+| **幻幻喵** | `libmiaomiaohuan.so` + `miaomiaohuan0` prefix | Custom native hooking | ❌ No |
+| **黯笙** | `bin.mt.signature.KillerApplication` | Signature killer + certificate spoof | ✅ Yes (Java only) |
+| **Kunkka** | `LSPAppComponentFactoryStub` + `assets/lspatch/config.json` | LSPatch Xposed module injection | ✅ Yes (patchable via LSPosed) |
+
+### Detection
+
+```bash
+# Dex2C/VM shell markers
+unzip -p app.apk classes*.dex | strings -a | grep -iE "YJ-Dex2C|yjaq\.xyz|libstub|libcxapkmod|protected_by_np"
+
+# Check for encrypted DEX
+unzip -l app.apk | grep "classes0.jar\|classes\.jar"
+```
+
+### Decision tree
+
+```
+¿Tiene libstub.so + assets/classes0.jar?
+  → SÍ: Dead end. Hack the original APK.
+  → NO: ¿Tiene ī/íì + métodos nativos (up.process, bi.b)?
+         → SÍ: Intenta neutralizar los <clinit> que llaman EntryPoint.stub
+         → Si se cuelga: Dead end parcial. El nativo mezcla diálogo + init.
+         → Si funciona: ✅
+  → NO: ¿Tiene solo ī/íì con métodos Java (iaw.w, iab.b)?
+         → SÍ: Neutralizar normalmente ✅
+  → NO: ¿No tiene ī/íì ni libstub?
+         → SÍ: Es el original o un mod limpio. Aplicar Step 5 normalmente ✅
+```
+
+**Source:** `we1005/MT-31b-LLM-TUI-Reverse-Agent` — Modder profiling and dead-end classification
+
+---
+
+## Frida Gadget — embedding Frida in redistributable APKs
+
+When native code cannot be patched with smali (e.g. Dex2C/VM shells like `libstub.so`), Frida can hook the dialog at runtime. For a redistributable APK without root, use **Frida Gadget** embedded inside the APK.
+
+### Proven technique: Frida-server (rooted device)
+
+This is the quickest way to confirm the hook works before attempting Gadget embedding:
+
+```bash
+# Start frida-server on rooted device
+adb shell "su -c '/data/local/tmp/frida-server -D &'"
+
+# Hook the app at startup
+frida -U -f com.example.app -l hook.js
+```
+
+**Hook script** (suppresses liteapks/yhf dialogs by filtering `Dialog.show()` stack traces):
+```javascript
+Java.perform(function() {
+    var Dialog = Java.use("android.app.Dialog");
+    Dialog.show.implementation = function() {
+        var Exception = Java.use("java.lang.Exception");
+        var e = Exception.$new();
+        var stack = e.getStackTrace();
+        for (var i = 0; i < Math.min(stack.length, 15); i++) {
+            var frame = stack[i].toString();
+            if (frame.indexOf("\u012B") >= 0 || frame.indexOf("iaw") >= 0 || 
+                frame.indexOf("iab") >= 0 || frame.indexOf("p001") >= 0 ||
+                frame.indexOf("p002") >= 0 || frame.indexOf("EntryPoint") >= 0) {
+                return; // Suppress the dialog
+            }
+        }
+        return this.show(); // Allow legitimate dialogs
+    };
+});
+```
+
+This chain was confirmed: `MainActivity.onCreate → bi.b(native) → AlertDialog.show()` — suppressed at `Dialog.show()` level.
+
+**Injection point for loadLibrary:** Inject `System.loadLibrary("frida-gadget")` into the Application class's `<clinit>()` — NOT `attachBaseContext()` (which may not be called if overridden by proxies). For this specific APK, the correct class was `uk.lgl.MultiDexApplication` in `classes11.dex`.
+
+### Gadget embedding: lessons learned (Frida 17.15.3)
+
+**What works:**
+- Gadget .so in `lib/arm64-v8a/libfrida-gadget.so` ✅
+- Config in `assets/frida-gadget.config` → gadget loads in listen mode ✅
+- Connecting externally: `frida -H 127.0.0.1:27042 -p <pid> -l hook.js` ✅
+
+**What fails:**
+- Config in `lib/arm64-v8a/libfrida-gadget.config.so` → gadget doesn't load at all ❌
+- `"type": "script"` with external file path → silently ignored, falls back to listen ❌
+- `"type": "script"` with inline `"script"` field → also ignored ❌
+- Script at `/sdcard/`, `/data/local/tmp/`, or app private dir → all ignored ❌
+
+**Root cause:** Frida 17.x appears to have a regression or undocumented change in how the gadget handles script mode on Android. The config is read but the script execution path is silently skipped. This needs further investigation with a different Frida version or the `frida-java-bridge` npm package (required since Frida 17 removed the built-in Java bridge).
+
+**Practical recommendation:** Prioritize finding a mod without `libstub.so` (smali-patchable). Frida Gadget embedding for Frida 17.x needs more research.
+
+**Sources:**
+- HackTricks Frida tutorial — config location reference
+- Frida 17.15.3 release notes — Java bridge removed from GumJS
+- Tested on PixeLeap v1.1.3.0 (ViP): 2 successful frida-server runs, 10 failed Gadget embedding attempts
+
+---
+
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
@@ -1172,3 +1364,737 @@ Starting September 2026, `com.google.android.verifier` (a pre-installed system s
 - [APKLab/APKLab](https://github.com/APKLab/APKLab) (★3911) — Android RE workbench for VS Code
 - [JesusFreke/smali](https://github.com/JesusFreke/smali) — baksmali/smali assembler/disassembler
 - [iBotPeaches/Apktool](https://github.com/iBotPeaches/Apktool) — APK decode/rebuild tool
+\n+---
+
+Actualización y ampliación — 2026-07-18
+
+Este skill ha sido ampliado para cubrir escenarios modernos (2025–2026), añadir automatización práctica y reforzar verificaciones de empaquetado y firma. Cambios clave:
+
+- Nuevos scripts de automatización en .opencode/skills/apk-modding/scripts/:
+  - patch_shared_prefs_defaults.py — cambia valores por defecto (premium/noads) de manera masiva y segura en smali
+  - neutralize_yhf_dialogs.py — neutraliza métodos estáticos de diálogos de modders (yhf/liteapks y variantes) sin borrar clases
+  - ziprepack.py — reempaqueta APK con reglas de compresión correctas (STORE para .so/.arsc/DEX) y preserva META-INF/services
+  - strip_sign_and_sign.py — limpia firmas antiguas, alinea y firma con keystore de depuración si es necesario
+
+- Firma APK v1/v2/v3/v4: verificación y recomendaciones actualizadas
+  - Verifique siempre antes y después de firmar: apksigner verify --verbose --print-certs app.apk
+  - Habilite v2 y v3; v4 es opcional (streaming). apksigner gestiona automáticamente compatibilidad por SDK
+
+- Split APKs, APKS/APKM y bundles (AAB): flujo actualizado
+  - Cómo generar universal APK con bundletool y extraer splits para parchear base.apk
+
+- Network Security Config (Android 7+): receta para permitir CAs de usuario/mitm en pruebas sin Frida
+
+- Detección 2025–2026 de patrones de modders
+  - p002i/p003i, q6/c, w6/b, d6/a y rutas renombradas; búsqueda basada en comportamiento y call-sites
+
+- Checklist de empaquetado reforzado (Android 14–16)
+  - .so y resources.arsc sin compresión (STORE), DEX sin compresión cuando se reescriben con zipfile
+  - zipalign -p para alinear .so a páginas (Android 15+ exige correcta alineación para mmap eficiente)
+
+Referencias rápidas a los nuevos archivos:
+
+- .opencode/skills/apk-modding/scripts/patch_shared_prefs_defaults.py
+- .opencode/skills/apk-modding/scripts/neutralize_yhf_dialogs.py
+- .opencode/skills/apk-modding/scripts/ziprepack.py
+- .opencode/skills/apk-modding/scripts/strip_sign_and_sign.py
+
+Uso responsable: Igual que el skill original, todo lo descrito se aplica exclusivamente a aplicaciones propias, investigación autorizada o entornos donde el propietario ha otorgado permiso explícito.
+
+Sección nueva: Verificación y firma (v1/v2/v3/v4)
+
+1) Comprobar firmas actuales
+
+   apksigner verify --verbose --print-certs app.apk
+
+   - Si ve errores de JAR signature (v1) tras reconstrucción, es normal si ha eliminado MANIFEST.MF. Android 7+ usa v2+/v3.
+
+2) Recomendación de firmado
+
+   - Use apksigner con v2 y v3 activados; v1 opcional para compatibilidad heredada (Android 6-).
+   - Ejemplo (keystore de depuración):
+
+     apksigner sign \
+       --ks "$HOME/.android/debug.keystore" --ks-pass pass:android \
+       --ks-key-alias androiddebugkey \
+       --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true \
+       --out hacked_signed.apk hacked_aligned.apk
+
+3) Verificar post-firma
+
+   apksigner verify --verbose --print-certs hacked_signed.apk
+
+Sección nueva: Split APKs, APKS/APKM y bundles
+
+- Dispositivos modernos suelen instalar splits (base + split_config.*). Parchee lógicamente en base.apk (código/DEX) y firme todos los splits con la misma clave.
+- Si dispone de .apks (bundletool), extraiga universal APK para análisis:
+
+  java -jar bundletool.jar extract-apks \
+    --apks app.apks \
+    --device-spec device.json \
+    --output-dir extracted/
+
+- Para generar .apks a partir de .aab (propio y autorizado):
+
+  java -jar bundletool.jar build-apks \
+    --bundle app.aab \
+    --output app.apks \
+    --ks $HOME/.android/debug.keystore \
+    --ks-pass pass:android \
+    --ks-key-alias androiddebugkey \
+    --connected-device
+
+Sección nueva: Detección de patrones de modders (2025–2026)
+
+- Además de ī/íì y īi/ïi, observe variantes: p000/p001, p002i/p003i, q6/c, w6/b, d6/a, a/b/pookie. Las llamadas suelen estar en classes2.dex (Activities) aunque la inyección viva en classes3+. Busque SIEMPRE call-sites en TODOS los DEX.
+- Grep efectivo (ripgrep):
+
+  rg -n "invoke-.*(ī/íì|īi/ïi|p000/p001|p002i/p003i|q6/c|w6/b|d6/a|a/b/pookie)" dex*_out --glob "**/*.smali" \
+    | rg -v "^dex\d*_out/(ī|īi|p000|p002i|q6|w6|d6|a)/"
+
+Checklist reforzado de empaquetado (Android 14–16)
+
+- .so sin compresión (STORE) y página-alineados con zipalign -p 4
+- resources.arsc sin compresión (STORE)
+- DEX sin compresión (STORE) cuando usa Python zipfile para reempaquetar; con zip/apktool puede DEFLATE, pero mantenga coherencia
+- Mantener META-INF/services/; eliminar solo .SF/.RSA/.DSA/.EC y MANIFEST.MF
+- Verificar con apksigner verify y aapt dump badging
+
+Automatización: scripts incluidos
+
+- Consulte .opencode/skills/apk-modding/scripts/README.md para uso y ejemplos. Todos los scripts trabajan sobre salidas de baksmali (dexN_out/) y generan backups automáticos.
+
+Limitaciones y decisiones
+
+- Si detecta libstub.so + assets/classes0.jar (Dex2C/VM shell), es vía muerta estática: priorice versiones originales o enfoque dinámico (Frida/LSPosed) con autorización explícita.
+- Si hay comprobaciones nativas de integridad DEX en .so (p.ej., libgoogle3.so), la vía robusta es parche nativo (Ghidra/radare2) o runtime hook confirmado con Frida antes de redistribuir.
+
+## Estrategias de parcheo avanzadas (2025–2026)
+
+### Estrategia A: Parcheo de defaults en SharedPreferences
+
+El patrón más común en apps de pago simple:
+```java
+this.isPremium = prefs.getBoolean("premium", false);
+```
+
+En smali, cambiar `const/4 v2, 0x0` → `0x1` modifica el valor por defecto. **Limitación**: si la app re-sincroniza desde Play Billing o servidor, el valor almacenado sobreescribe el default.
+
+**Cuándo usar:** Apps sin Billing, apps con licencia local, apps que solo leen SharedPreferences.
+**Cuándo NO usar:** Apps con Play Billing, apps con licencia server-side. Usar Estrategia C.
+
+### Estrategia B: Forzar retorno de método
+
+Reemplazar todo el cuerpo de un método de comprobación:
+```smali
+.method public isPremium()Z
+    .registers 1
+    const/4 v0, 0x1
+    return v0
+.end method
+```
+
+**Ventaja:** Inmune a re-sync de SharedPreferences.
+**Desventaja:** Si hay múltiples métodos de comprobación (5+ en AdGuard), hay que parchear todos.
+
+### Estrategia C: Hook de getter por nombre de clave
+
+Interceptar `getBoolean(key, default)` al inicio del método y retornar `true` si la clave coincide:
+```smali
+.method public getBoolean(Ljava/lang/String;Z)Z
+    .registers 3
+    const-string v0, "KEY_IS_PREMIUM"
+    invoke-virtual {p1, v0}, Ljava/lang/String;->endsWith(Ljava/lang/String;)Z
+    move-result v0
+    if-eqz v0, :original
+    const/4 v0, 0x1
+    return v0
+    :original
+    # ... cuerpo original
+```
+
+**Ventaja:** Sobrevive re-sync de Play Billing porque intercepta la **lectura**, no el valor almacenado.
+**Fuente:** `arandomhooman/hoomans-morphe-patches` — BlockerHero
+
+### Estrategia D: Supresión de diálogos de re-login y toasts de auth
+
+Cuando se fuerza premium sin login válido, la app puede:
+1. Sincronizar con servidor → 401 → lanzar `ReLoginDialogActivity`
+2. Mostrar toasts "Unauthenticated" repetidamente
+
+**Suprimir broadcast de re-login:**
+```smali
+.method ...sendReLoginBroadcast()V
+    .registers 0
+    return-void
+.end method
+```
+
+**Suprimir lanzamiento de ReLoginDialogActivity:**
+```smali
+.method ...launchReLoginDialog()V
+    .registers 0
+    return-void
+.end method
+```
+
+**Suprimir solo toasts de auth (dejar otros toasts funcionando):**
+```smali
+# Al inicio del helper de toast:
+if-eqz p1, :show
+const-string v0, "uthenticat"
+invoke-virtual {p1, v0}, Ljava/lang/String;->contains(Ljava/lang/CharSequence;)Z
+move-result v0
+if-eqz v0, :show
+return-void
+:show
+# ... código original de toast
+```
+
+**Fuentes:**
+- `rushiranpise/morphe-patches` — CamScanner YearlyUnlockPatch
+- `arandomhooman/hoomans-morphe-patches` — BlockerHero EnablePremiumPatch
+
+### Estrategia E: Parcheo de límites numéricos
+
+Apps con límites configurables (favoritos, exportaciones, dispositivos):
+```java
+int maxFavorites = prefs.getInt("max_favorites", 5);
+```
+
+En smali:
+```smali
+const-string v1, "max_favorites"
+const/16 v2, 0x5              # ← cambiar a 0x63 (99) o 0x3E7 (999)
+invoke-interface {v0, v1, v2}, ...getInt...
+```
+
+Para límites grandes, usar `const v2, 0x7FFFFFFF` (Integer.MAX_VALUE) o `const-wide/32 v2, 0x7FFFFFFF`.
+
+### Estrategia F: Parcheo de trial/periodo de prueba
+
+Apps con trial por timestamp:
+```java
+long trialEnd = prefs.getLong("trial_end", 0);
+if (System.currentTimeMillis() > trialEnd) { /* expired */ }
+```
+
+Opciones:
+1. **Extender trial:** cambiar el default a `Long.MAX_VALUE` (0x7FFFFFFFFFFFFFFF)
+2. **Desactivar comprobación:** reemplazar el método `isTrialExpired()Z` → `return false`
+3. **Hook de comparación:** interceptar `System.currentTimeMillis()` y retornar 0 (siempre dentro de trial)
+
+---
+
+## Perfiles de modders — Catálogo ampliado (2025–2026)
+
+### Modders Java-patchables (smali)
+
+| Modder | Firma | Paquetes inyectados | Técnica | ¿Parcheable estático? |
+|---|---|---|---|---|
+| **yhf / liteapks** | `ī/íì/`, `īi/ïi/` | `bi`, `wl`, `wi`, `bl`, `iaw`, `iab`, `pk` | Diálogos Java + a veces `libstub.so` | ⚠️ Parcial (Java sí, nativo no) |
+| **yhf (2025+)** | `p000/p001/`, `p002i/p003i/` | Renombrado de `ī/íì/` | Mismo, paquetes renombrados | ⚠️ Parcial |
+| **黯笙** | `bin.mt.signature.KillerApplication` | Signature killer + cert spoof | Java puro | ✅ Sí |
+| **Kunkka** | `LSPAppComponentFactoryStub` + `assets/lspatch/config.json` | LSPatch Xposed injection | Xposed module | ✅ Sí (via LSPosed) |
+
+### Modders con VM shell / Dex2C (vía muerta estática)
+
+| Modder | Firma | Archivos clave | Técnica | ¿Parcheable estático? |
+|---|---|---|---|---|
+| **zhou45** | `libstub.so` + `assets/protected_by_np` | `assets/classes0.jar` | YJ-Dex2C VM shell (`yjaq.xyz`) | ❌ No |
+| **辰夕** | `libcxapkmod.so` + `assets/cxapkDex/*.Epic` | Native code injection | VM nativa | ❌ No |
+| **幻幻喵** | `libmiaomiaohuan.so` + prefijo `miaomiaohuan0` | Custom native hooking | Hook nativo | ❌ No |
+
+### Detección rápida de perfil
+
+```bash
+# 1. ¿Tiene libstub.so? → zhou45 (Dex2C, vía muerta)
+unzip -l app.apk | grep -i "libstub\|protected_by_np"
+
+# 2. ¿Tiene ī/íì o p000/p001? → yhf/liteapks
+unzip -p app.apk classes*.dex | strings -a | grep -c "ī/íì\|p000/p001"
+
+# 3. ¿Tiene bin.mt.signature? → 黯笙 (Java, parcheable)
+unzip -p app.apk classes*.dex | strings -a | grep -c "bin.mt.signature"
+
+# 4. ¿Tiene LSPatch config? → Kunkka (Xposed)
+unzip -l app.apk | grep -i "lspatch/config.json"
+
+# 5. ¿Tiene libcxapkmod? → 辰夕 (VM nativa)
+unzip -l app.apk | grep -i "libcxapkmod\|cxapkDex"
+
+# 6. ¿Tiene libmiaomiaohuan? → 幻幻喵
+unzip -l app.apk | grep -i "miaomiaohuan"
+```
+
+### Árbol de decisión
+
+```
+¿Tiene libstub.so + assets/classes0.jar?
+  → SÍ: Dead end estático. Hackear el APK original.
+  → NO: ¿Tiene ī/íì + métodos nativos (up.process, bi.b)?
+         → SÍ: Intentar neutralizar <clinit> que llaman EntryPoint.stub
+         → Si se cuelga: Dead end parcial. El nativo mezcla diálogo + init.
+         → Si funciona: ✅
+  → NO: ¿Tiene solo ī/íì con métodos Java (iaw.w, iab.b)?
+         → SÍ: Neutralizar normalmente ✅
+  → NO: ¿No tiene ī/íì ni libstub?
+         → SÍ: Es el original o un mod limpio. Aplicar Step 5 normalmente ✅
+```
+
+---
+
+## Plantilla de case study
+
+Para documentar nuevos casos, usar esta plantilla:
+
+```markdown
+# Case: [Nombre App] [Versión]
+
+## Metadata
+- **App:** com.example.app
+- **Versión:** 1.2.3
+- **Fuente APK:** APKMirror / APKPure / adb pull
+- **Fecha:** 2026-XX-XX
+- **Objetivo:** Desbloquear premium / eliminar ads / quitar diálogo modder
+
+## Inspección inicial
+- DEX files: N
+- Native libs: Sí/No (listar .so)
+- Modder detectado: yhf / ninguno / otro
+- Protección: SharedPreferences / Play Billing / native check
+
+## Análisis
+- Claves SharedPreferences encontradas: premium, noads, max_favorites
+- Métodos de comprobación: isPremium()Z, isPro()Z, checkLicense()V
+- DEX con inyección: classes3.dex
+- DEX con call-sites: classes2.dex (MainActivity)
+
+## Parches aplicados
+| Archivo | Método | Cambio | Estrategia |
+|---|---|---|---|
+| classes2.dex | isPremium()Z | return true | B |
+| classes2.dex | getBoolean("premium") | default 0x0→0x1 | A |
+
+## Resultado
+- ✅ Premium desbloqueado
+- ✅ Sin diálogos de modder
+- ✅ Sin crashes
+- ⚠️ Nota: re-sync de Billing puede revertir (usar Estrategia C si ocurre)
+
+## Lección clave
+[Una frase con el aprendizaje principal]
+```
+
+---
+
+## Morphe patcher — Alternativa programática al smali manual
+
+El smali manual es frágil: los offsets cambian entre versiones y los parches deben redimensionarse para cada update. El ecosistema **Morphe patcher** provee un DSL en Kotlin que automatiza el parcheo con fingerprints y matching de métodos version-agnostic.
+
+### Repositorios
+
+| Repo | Stars | Descripción |
+|---|---|---|
+| `MorpheApp/morphe-manager` | ★6341 | Morphe app patcher para Android (el engine) |
+| `rushiranpise/morphe-patches` | ★173 | 50+ app patches mantenidos (AdGuard, CamScanner, AccuWeather) |
+| `arandomhooman/hoomans-morphe-patches` | ★92 | Patches adicionales (BlockerHero) |
+| `Paresh-Maheshwari/morphe-ai` | ★114 | Pipeline multi-agente con IA para análisis y patching |
+
+### Cuándo usar Morphe vs smali manual
+
+| | Smali manual | Morphe patcher |
+|---|---|---|
+| Parche one-off | ✅ Más rápido | Overkill |
+| Mantener patches entre versiones | ❌ Frágil | ✅ Fingerprints adaptan |
+| Compartir con comunidad | ❌ Difícil | ✅ Versionable, compartible |
+| Apps con muchos targets | ❌ Tedioso | ✅ Escala bien |
+| Aprender cómo funcionan los patches | ✅ Transparente | ❌ Abstracto |
+
+---
+
+## Bypass de firma en runtime (PMS Hook, IO redirection)
+
+Cuando una app hace verificación de firma en runtime (no en nativo), hay dos técnicas runtime que evitan parchar la app. Requieren root + Xposed/LSPosed o framework de virtualización.
+
+### PMS Hook (PM Proxy)
+
+Hookear `ActivityThread.sPackageManager` y `ApplicationPackageManager.mPM` via Java dynamic proxy para retornar una firma spoofeada cuando la app llama `getPackageInfo(GET_SIGNATURES)`.
+
+**Fuente:** `ZJ595/AndroidReverse` (★2222) — Lesson 6
+
+### IO redirection
+
+Redirigir reads de archivo para que cuando la app abra su propio APK para verificar la firma, lea el **APK original no modificado** en lugar del parcheado.
+
+Tools:
+- **VirtualApp** (`asLody/VirtualApp`) — virtualización que intercepta file I/O
+- **Ratel** (`virjarRatel/ratel-core`) — RAT framework con IO redirection
+- **SVC TraceHook** — ptrace + seccomp para redirección a nivel syscall
+
+### Verificación triangular (三角校验)
+
+Patrón más complejo que verificación circular simple:
+```
+libnative.so ──checks──> classes.dex
+classes.dex  ──checks──> dex cargado dinámicamente (extraído en runtime, borrado tras check)
+dynamic dex  ──checks──> libnative.so
+```
+Cada componente verifica al siguiente en triángulo. Parchear uno rompe la cadena. Requiere parchear los tres simultáneamente o usar hooks runtime.
+
+---
+
+## Android 16+ Developer Verifier bypass
+
+Desde septiembre 2026, `com.google.android.verifier` (servicio del sistema pre-instalado) bloquea instalación de APKs en dispositivos Android 16+ certificados en BR/ID/SG/TH cuando el certificado de firma no está en el registro de desarrolladores de Google. La política se controla via phenotype flags desde servidores de Google.
+
+**Impacto:** Sideloading de APKs parcheados en Android 16+ certificado en regiones afectadas puede bloquearse incluso con unknown sources habilitado.
+
+**Bypass layers (DEX patching del verifier app):**
+
+| Layer | Método | Patch |
+|---|---|---|
+| 1 | `onVerificationRequired` / `onVerificationRetry` | Llamar `reportVerificationBypassed(1)` inmediatamente |
+| 2 | Platform policy flag (45681539) | Retornar `Long(0)` = NONE (no blocking) |
+| 3 | Forced backport flag (45749715) | Retornar `Boolean.TRUE` (short-circuit path) |
+
+**Requisitos:**
+- APK del verifier parcheado debe instalarse como **system app** (reemplazando el original) via Magisk module o ADB con root
+- El verifier tiene privilegio `DEVELOPER_VERIFICATION_AGENT`
+- Instalaciones via ADB están exentas de verificación
+
+**Fuente:** `rushiranpise/morphe-patches` — `AndroidVerifierBypassPatch.kt`
+
+---
+
+## PairipCore license bypass
+
+PairipCore (`libpairipcore.so`) es una librería de verificación de licencia de Google Play que encripta strings de la app en un vault y valida la firma del APK contra Play Store. Envuelve la clase `Application` de la app via `com.pairip.application.Application`.
+
+### Detección
+
+```bash
+unzip -p app.apk classes*.dex | strings -a | grep -c "pairip"
+unzip -l app.apk | grep -i "pairipcore"
+```
+
+### Cómo funciona
+
+```
+Application.attachBaseContext()
+  → VMRunner.setContext(Context)        # Native VM init
+  → SignatureCheck.verifyIntegrity(Context)  # APK signature check
+  → VMRunner.invoke(id, args)          # Encrypted string decryption
+      → libpairipcore.so               # Native VM execution
+```
+
+`VMRunner.invoke(String, Object[])` es la API central — se llama desde cientos de sitios en la app (ads SDKs, analytics, Firebase, WorkManager) para desencriptar strings en runtime. Estos strings están encriptados en el DEX y solo pueden desencriptarse via la VM nativa.
+
+### Estrategias de bypass
+
+#### Estrategia A: Bypass mínimo (solo smali)
+
+Si la app solo tiene Pairip para verificación de licencia (sin dependencias del vault):
+
+1. Neutralizar `SignatureCheck.verifyIntegrity(Context)V` → `return-void`
+2. Neutralizar `StartupLauncher.launch()V` → `return-void`
+
+**⚠️ NO neutralizar `VMRunner.invoke` o `VMRunner.setContext`** — toda la app depende de ellos para desencriptar strings.
+
+#### Estrategia B: Bypass completo (cuando vault strings están comprometidos)
+
+Si el APK ya está moddeado y los vault strings están vacíos/corruptos, usar enfoque multi-capa:
+
+| Layer | Acción | Propósito |
+|---|---|---|
+| 1 | Reemplazar clase `Application` en AndroidManifest | Remover wrapper de Pairip |
+| 2 | Patch `VMRunner.invoke` → return null | Prevenir crash con vault strings vacíos |
+| 3 | Patch protobuf field lookup para nombres vacíos | `getDeclaredField("")` → retornar primer field |
+| 4 | Crear `SafeExceptionHandler` | Capturar NPE de vault strings vacíos en background threads |
+| 5 | Envolver crypto init en try-catch | `TinkConfig.register()` falla con nombres de algoritmo vacíos |
+| 6 | Stub `FlutterSecureStorage` → `success(null)` | EncryptedSharedPreferences falla con cipher vacío |
+| 7 | Patch `getSystemService()` vault strings | Restaurar "connectivity", "wifi", "location" |
+| 8 | Auto-detectar Kotlin property vault strings | Restaurar nombres de propiedades desde getter signatures |
+
+#### Estrategia C: Morphe patcher
+
+```kotlin
+// hoo-dles/morphe-patches — DisableLicenseCheckPatch.kt
+ProcessLicenseResponseFingerprint.method.addInstruction(0, "const/4 p1, 0x0")
+ValidateLicenseResponseFingerprint.method.returnEarly()
+```
+
+### Herramientas automatizadas
+
+| Tool | Lenguaje | Cobertura |
+|---|---|---|
+| `TechnoIndian/RKPairip` | Python | Pipeline completo automatizado |
+| `carpedm20/android-hack/patch_pairip.sh` | Bash | Script shell para patching rápido |
+| `hoo-dles/morphe-patches` | Kotlin | Morphe patch para license check |
+| `rushiranpise/morphe-patches/PairIp.kt` | Kotlin | Utilidades Pairip compartidas |
+
+**Fuentes:**
+- `Rt39/Merc_translation_andriod` — `PAIRIP_BYPASS_GUIDE.md`
+- `TechnoIndian/RKPairip` — Automated Python bypass tool
+
+---
+
+## Frida Gadget — Embebiendo Frida en APKs redistribuibles
+
+Cuando el código nativo no puede parchearse con smali (ej. Dex2C/VM shells como `libstub.so`), Frida puede hookear el diálogo en runtime. Para un APK redistribuible sin root, usar **Frida Gadget** embebido dentro del APK.
+
+### Técnica probada: Frida-server (dispositivo con root)
+
+```bash
+# Iniciar frida-server en dispositivo con root
+adb shell "su -c '/data/local/tmp/frida-server -D &'"
+
+# Hookear la app al inicio
+frida -U -f com.example.app -l hook.js
+```
+
+**Hook script** (suprime diálogos liteapks/yhf filtrando stack traces de `Dialog.show()`):
+```javascript
+Java.perform(function() {
+    var Dialog = Java.use("android.app.Dialog");
+    Dialog.show.implementation = function() {
+        var Exception = Java.use("java.lang.Exception");
+        var e = Exception.$new();
+        var stack = e.getStackTrace();
+        for (var i = 0; i < Math.min(stack.length, 15); i++) {
+            var frame = stack[i].toString();
+            if (frame.indexOf("\u012B") >= 0 || frame.indexOf("iaw") >= 0 || 
+                frame.indexOf("iab") >= 0 || frame.indexOf("p001") >= 0 ||
+                frame.indexOf("p002") >= 0 || frame.indexOf("EntryPoint") >= 0) {
+                return; // Suprimir el diálogo
+            }
+        }
+        return this.show(); // Permitir diálogos legítimos
+    };
+});
+```
+
+**Punto de inyección para loadLibrary:** Inyectar `System.loadLibrary("frida-gadget")` en el `<clinit>()` de la clase Application — NO en `attachBaseContext()` (que puede no llamarse si hay proxies).
+
+### Gadget embedding: lecciones aprendidas (Frida 17.15.3)
+
+**Qué funciona:**
+- Gadget .so en `lib/arm64-v8a/libfrida-gadget.so` ✅
+- Config en `assets/frida-gadget.config` → gadget carga en modo listen ✅
+- Conexión externa: `frida -H 127.0.0.1:27042 -p <pid> -l hook.js` ✅
+
+**Qué falla:**
+- Config en `lib/arm64-v8a/libfrida-gadget.config.so` → gadget no carga ❌
+- `"type": "script"` con archivo externo → ignorado, fallback a listen ❌
+- Script en `/sdcard/`, `/data/local/tmp/`, o dir privado de app → todos ignorados ❌
+
+**Recomendación práctica:** Priorizar encontrar un mod sin `libstub.so` (parcheable en smali). Frida Gadget embedding para Frida 17.x necesita más investigación.
+
+---
+
+## Ecosistema de herramientas de modding (curado de GitHub y foros rusos/chinos)
+
+### Herramientas de parcheo de APK
+
+| Herramienta | Repo | ★ | Lenguaje | Uso |
+|---|---|---|---|---|
+| **ApkForge** | `All1eexx/ApkForge` | — | Python | Pipeline completo: decompile → patch Java/Kotlin/C++ → sign. Config-driven via JSON. |
+| **UltimatePatcher** | `Schwartzblat/UltimatePatcher` | ★11 | Java/Python | Patcher genérico que trabaja con Java en lugar de smali. Compila patch Java → extrae smali → inyecta en APK original. |
+| **MoovitPatcher** | `Schwartzblat/MoovitPatcher` | ★16 | Python | Patcher específico para Moovit: desbloquea premium y elimina ads. |
+| **SPECTRE** | `alphakremlin/spectre-apk-patcher` | — | Python | Smali Premium & Entitlement Cracker Tool para RE. |
+| **NP-Manager** | `githubXiaowangzi/NP-Manager` | ★1704 | — | Herramienta china: control flow obfuscation, Dex2C, Res obfuscation, Dex/jar/smali conversion, APK/dex/jar obfuscation y string encryption. |
+| **MT Manager** | (app Android) | — | — | App Android con editor de smali, DEX viewer, y ApkSignatureKill integrado. Muy popular en foros rusos/chinos. |
+| **ApkEditor** | `PatrickAlex2019/ApkEditor` | ★360 | Java | APP reverse compilation, APK localization, APK cracking, APK signature. |
+| **APKToolGUI** | `AndnixSH/APKToolGUI` | — | — | GUI para apktool, signapk, zipalign y baksmali. |
+| **ApkEasyTool** | (XDA) | — | — | GUI ligera para ApkTool con adb-support. |
+| **apk.sh** | `ax/apk.sh` | ★3809 | Shell | Script que automatiza RE de Android: decompile, patch, repack, sign, install. |
+| **DexPatcher** | `DexPatcher/dexpatcher-tool` | ★445 | Java | Patcher de bytecode Dalvik. Permite parchear DEX sin recompilar todo. |
+| **Re-ApkPatcher** | `huanli233/Re-ApkPatcher` | ★14 | Kotlin | Patch APK usando Java/Kotlin code (Code & Resource). |
+
+### Signature killers y bypass de integridad
+
+| Herramienta | Repo | ★ | Técnica |
+|---|---|---|---|
+| **ApkSignatureKiller** | `L-JINBIN/ApkSignatureKiller` | ★960 | One-click APK signature verification crack. |
+| **ApkSignatureKillerEx** | `L-JINBIN/ApkSignatureKillerEx` | ★814 | Nueva versión MT去签 y对抗. |
+| **APKKiller** | `aimardcr/APKKiller` | ★449 | Bypass APK Signatures Verify & Integrity Check usando Reflection. |
+| **SRPatch-X** | `KhunHtetzNaing/SRPatch-X` | ★93 | APK signature killer con PMS Hook, IO Hook, y SVC Hook. Extrae `libSRPatch.so` del SRPatch original. |
+| **ApkSignatureKill (MT)** | `SectionTN/ApkSignatureKill` | ★17 | ApkSignatureKill usado en MT Manager. |
+
+### Frida anti-detección y herramientas
+
+| Herramienta | Repo | ★ | Uso |
+|---|---|---|---|
+| **Fridare** | `suifei/fridare` | ★808 | Automatización de modificación de frida-server para iOS/Android. Cambia nombres y puertos para evadir detección. GUI v4.0.0 con Fyne. |
+| **strongR-frida-android** | `hluwa/strongR-frida-android` / `CrackerCat/strongR-frida-android` | ★699 | Versión anti-detección de frida-server para Android. |
+| **FRIDA-DEXDump** | `hluwa/frida-dexdump` | ★4559 | Búsqueda y dump de DEX en memoria. |
+| **frida_dump** | `lasting-yang/frida_dump` | ★2056 | Frida dump dex, frida dump so. |
+| **frida-il2cpp-bridge** | `vfsfitvnm/frida-il2cpp-bridge` | — | Frida module para debug, dump, manipular IL2CPP. |
+| **frida-il2cpp** | `AeonLucid/frida-il2cpp` | — | Helper library para Unity il2cpp games. |
+| **r2frida** | `nowsecure/r2frida` | — | Radare2 + Frida combinados. |
+| **fridump** | `Nightbringer21/fridump` | — | Universal memory dumper usando Frida. |
+| **frida-unpack** | `dstmath/frida-unpack` | — | Frida-based shelling tool (unpacker). |
+| **Patch Apk** | `NickstaDB/patch-apk` | — | Wrapper para inyectar Objection/Frida gadget en APK. |
+| **Frida-Script-Runner** | `z3n70/Frida-Script-Runner` | ★371 | Web-based Frida framework para Android & iOS pentesting. |
+| **frida-script-gen** | `thecybersandeep/frida-script-gen` | ★215 | Genera Frida bypass scripts para Android APK root y SSL checks. |
+
+### Hooking frameworks nativos
+
+| Herramienta | Repo | ★ | Lenguaje | Uso |
+|---|---|---|---|---|
+| **Dobby** | `jmpews/Dobby` | ★4780 | C++ | Hook framework ligero multiplataforma multi-arquitectura. |
+| **xHook** | `iqiyi/xHook` | ★4343 | C | PLT hook library para Android native ELF. |
+| **SandHook** | `asLody/SandHook` | ★2222 | Java | Android ART Hook / Native Inline Hook / Single Instruction Hook. Soporta 4.4-11.0. |
+| **LSPlant** | `LSPosed/LSPlant` | ★1321 | C++ | Hook framework para Android Runtime (ART). |
+| **And64InlineHook** | `Rprop/And64InlineHook` | — | C++ | Lightweight ARMv8-A Inline Hook Library. |
+| **Android_Inline_Hook** | `GToad/Android_Inline_Hook` | — | C | Native library hooking para thumb-2 y arm32. |
+| **whale** | `asLody/whale` | — | C | Hook Framework para Android/iOS/Linux/MacOS. |
+| **KittyMemory** | `MJx0/KittyMemory` | — | C++ | Runtime code patching para Android e iOS. |
+
+### Virtual engines (sandboxing y hooking sin root)
+
+| Herramienta | Repo | ★ | Uso |
+|---|---|---|---|
+| **VirtualApp** | `asLody/VirtualApp` | ★11040 | Virtual Engine para Android. Permite clonar apps, hooking, IO redirection. |
+| **BlackBox** | `FBlackBox/BlackBox` | ★2587 | Virtual engine: clonar y correr apps virtuales. Integra Xposed framework. |
+| **SpaceCore** | `FSpaceCore/SpaceCore` | ★841 | Virtual Android system engine para clonar apps. |
+| **LSPatch** | `LSPosed/LSPatch` | ★9261 | Non-root Xposed framework basado en LSPosed. Permite injectar módulos Xposed sin root. |
+| **NPatch** | `7723mod/NPatch` | ★1830 | Fork de LSPatch basado en LSPosed, non-root Xposed framework. |
+
+### Obfuscación y protección (para entender lo que hay que bypassar)
+
+| Herramienta | Repo | ★ | Uso |
+|---|---|---|---|
+| **Obfuscapk** | `ClaudiuGeorgiu/Obfuscapk` | ★1265 | Obfuscación automática de APKs (black-box). |
+| **BlackObfuscator** | `CodingGay/BlackObfuscator` | ★1114 | Obfuscador para APK DexFile. |
+| **AndResGuard** | `shwenzhang/AndResGuard` | — | Proguard resource para Android (WeChat team). |
+| **Dex2C** | `springmusk026/Dex2C-Tool` | — | Convierte DEX bytecode a C/C++ nativo. |
+| **BlackDex** | `CodingGay/BlackDex` | ★6402 | Android unpack (dexdump) tool. Soporta Android 5.0-12 sin root. |
+
+### Unity / IL2CPP modding (juegos)
+
+| Herramienta | Repo | ★ | Uso |
+|---|---|---|---|
+| **Il2CppDumper** | `Perfare/Il2CppDumper` | — | Dumper de IL2CPP. |
+| **Zygisk-Il2CppDumper** | `Perfare/Zygisk-Il2CppDumper` | ★3229 | Dump de il2cpp data en runtime via Zygisk. |
+| **Il2CppInspector** | `djkaty/Il2CppInspector` | — | Herramienta automatizada para RE de Unity IL2CPP binaries. |
+| **UnityResolve.hpp** | `issuimo/UnityResolve.hpp` | ★453 | Unity engine C++ API (Mono/il2cpp) para Windows, Android, Linux. |
+| **ByNameModding** | `geokar2006/ByNameModding` | — | Modding il2cpp games por classes, methods, fields names. |
+| **IL2CPP_Resolver** | `sneakyevilSK/IL2CPP_Resolver` | — | Run-time API resolver para IL2CPP Unity. |
+
+### Mod menu templates (para juegos)
+
+| Template | Repo | Uso |
+|---|---|---|
+| **PlatinmodsMenu** | `FrostyHacker/PlatinmodsMenu` | Mod menu template de Platinmods. |
+| **Android-Mod-Menu** | `LGLTeam/Android-Mod-Menu` | Mod menu template. |
+| **FrostyMenu** | `FrostyHacker/FrostyMenu` | Mod menu template. |
+| **FloatingModMenu** | `MrIkso/FloatingModMenu` | Mod menu template flotante. |
+| **Android-Hooking-Patching-Template** | `LGLTeam/Android-Hooking-Patching-Template` | Hooking y patching template. |
+
+### Herramientas de análisis y hex editing
+
+| Herramienta | Repo | ★ | Uso |
+|---|---|---|---|
+| **Bytecode-Viewer** | `Konloch/bytecode-viewer` | ★15566 | GUI con múltiples decompilers: JADX, Fernflower, Krakatau, smali. |
+| **ApkStudio** | `vaibhavpandeyvpz/apkstudio` | ★4316 | IDE cross-platform Qt6 para RE de Android. |
+| **ImHex** | `WerWolv/ImHex` | — | Hex Editor para RE. |
+| **ARM-Converter** | `MikaCybertron/ARM-Converter` | — | Conversor offline ARM64/ARM/THUMB instruction → hex. |
+| **KMrite** | `BryanGIG/KMrite` | — | Escritura en lib.so con offset y hex bytes. |
+
+### Lista maestra de referencia
+
+La lista más completa de herramientas de modding de Android está en `jbro129/android-modding` (★739), con 821 líneas categorizando:
+- Mod Menu Templates (20+)
+- Dumping and Unpacking (IL2CPP, UE4, BlackDex)
+- Packing and Protection (Obfuscapk, BlackObfuscator, DexGuard)
+- C++ Libraries (KittyMemory, ByNameModding, IL2CPP_Resolver)
+- Hooking Libraries (Dobby, xHook, SandHook, LSPlant)
+- Modding Projects and Tutorials
+- Modding Tools (ApkSignatureKiller, APKKiller, apk-mitm)
+- IDA and RE Platforms (Ghidra, Cutter, IDA plugins)
+- Frida (FRIDA-DEXDump, strongR-frida, r2frida)
+- Virtual Engines (VirtualApp, BlackBox, LSPatch)
+- Other (injectors, memory hacks)
+
+---
+
+## Herramientas rusas y chinas (curado de 4PDA y foros relacionados)
+
+### Editores APK on-device (muy populares en foros rusos)
+
+| Herramienta | Versión | Origen | Uso |
+|---|---|---|---|
+| **MT Manager** | 2.26.7 | `mt2.cn` (China) | Editor APK dual-panel on-device: traducción, clonación, cifrado, firma, optimización. Incluye DEX editor, ApkSignatureKill integrado. Muy popular en 4PDA. |
+| **NP Manager** | 3.1.41 | `MT_吹牛儿` (China) | Editor APK on-device: control flow obfuscation, Dex2C, Res obfuscation, Dex/jar/smali conversion, string encryption. Basado en MT Manager. |
+| **APK Editor Pro** | 2.7.0 | `TimScriptov` | Editor APK on-device: cambio de strings, reemplazo de imágenes, modificación de layout, eliminación de ads, cambio de permisos. Soporta patches. |
+| **Batch ApkTool** | 3.8.1 | `BurSoft` (Rusia) | Utilidad Windows para recompilación correcta de APK. Desarrollada en colaboración con profesionales de modificación. Interfaz rusa. |
+| **TranslatorApk** | — | 4PDA | Programa para traducción cómoda de archivos .apk. |
+
+### Herramientas de parcheo y bypass (foros rusos)
+
+| Herramienta | Versión | Origen | Uso |
+|---|---|---|---|
+| **Lucky Patcher** | 12.10.6 | `ChelpuS` | Patcher universal para la mayoría de apps y juegos. Emula compras in-app, elimina ads, elimina verificación de licencia, modifica permisos. Requiere Android 4.0+. |
+| **Frida Injector - Pocket Edition** | 3.1 | `Иван Тимашков` | Inyecta código en apps directamente en el teléfono. Requiere root o espacio virtual. GitHub: `TimScriptov/Frida-Injector-for-Android`. |
+| **App Cloner** | — | 4PDA | Clonación de APK sin root. |
+
+### Foros rusos de referencia (4PDA)
+
+| Hilo | URL | Contenido |
+|---|---|---|
+| **MT Manager** | `4pda.to/forum/index.php?showtopic=548542` | Hilo oficial: traducción, firma, modding, crack y optimización APK. |
+| **NP Manager** | `4pda.to/forum/index.php?showtopic=966965` | Hilo oficial: edición, traducción, clonación, cifrado, firma, optimización. |
+| **Batch ApkTool** | `4pda.to/forum/index.php?showtopic=557858` | Utilidad para recompilación correcta de APK. |
+| **APK Editor Pro** | `4pda.to/forum/index.php?showtopic=575450` | Editor APK on-device con patches. |
+| **Lucky Patcher** | `4pda.to/forum/index.php?showtopic=298302` | Patcher universal. |
+| **Frida Injector PE** | `4pda.to/forum/index.php?showtopic=998591` | Frida en Android on-device. |
+| **Nueva forma de modificar apps** | `4pda.to/forum/index.php?showtopic=209346` | Tutorial de modificación/traducción de apps con APK Manager. |
+| **Instrucciones de edición de recursos** | `4pda.to/forum/index.php?showtopic=540887` | Catálogo de manuales de edición de recursos del sistema. |
+| **Edición de recursos del sistema** | `4pda.to/forum/index.php?showtopic=196047` | Discusión de métodos de edición de recursos del sistema. |
+
+### Patrones de la comunidad rusa
+
+- **MT Manager y NP Manager** son las herramientas más usadas en foros rusos para modding on-device (sin PC).
+- **Batch ApkTool** es el estándar para modding en PC (Windows) en la comunidad rusa.
+- **Lucky Patcher** sigue siendo ampliamente usado para bypass de licencias y emulación de compras.
+- Los tutoriales de 4PDA cubren principalmente traducción y modificación de recursos del sistema, no tanto crack de premium (eso se discute menos abiertamente).
+- La comunidad rusa prefiere herramientas con interfaz y flujo de trabajo en ruso.
+
+---
+
+## Foros y comunidades de referencia
+
+### Comunidades técnicas (recomendadas para aprendizaje)
+
+| Foro | URL | Enfoque |
+|---|---|---|
+| **XDA Developers** | `xda-developers.com` | Desarrollo Android, modding legal, ROMs, kernels, Magisk. |
+| **Reverse Engineering SE** | `reverseengineering.stackexchange.com` | RE genérico, Q&A técnico de alto nivel. |
+| **Reddit r/revanced** | `reddit.com/r/revanced` | ReVanced, Morphe patcher, patches open-source. |
+| **Reddit r/androidroot** | `reddit.com/r/androidroot` | Root, Magisk, módulos. |
+| **Frida Slack** | `frida.io` | Soporte oficial de Frida. |
+| **OWASP Mobile Slack** | `owasp.org` | MASTG/MASVS, seguridad móvil. |
+
+### Foros rusos/chinos (distribución de mods — precaución legal)
+
+| Foro | URL | Enfoque | Notas |
+|---|---|---|---|
+| **4PDA** | `4pda.to` | Foro ruso, muy completo técnico | Requiere registro. Contenido técnico fuerte + distribución. |
+| **Androeed** | `androeed.ru` | Foro ruso de mods | Similar a 4PDA. |
+| **Platinmods** | `platinmods.com` | Mods de APK, discusión técnica | Distribuye APKs modificadas. |
+| **BlackMod** | `blackmod.net` | Mods de juegos Android | Distribución de mods premium. |
+| **HappyMod** | `happymod.com` | Mods de juegos | Plataforma de distribución. |
+
+### Canales Discord/Telegram
+
+- **Morphe patcher Discord** — discusión de patches, fingerprints, desarrollo
+- **Frida community** — soporte técnico de Frida
+- **Magisk Discord** — desarrollo de módulos Magisk/Zygisk
+- **LSPosed Discord** — desarrollo de módulos Xposed
+
+---
+
+## Changelog
+
+- 2026-07-18 (v3): Añadidos 4 scripts de automatización, guía de firma v2/v3/v4, bundles/splits, patrones 2026, checklist Android 14–16, estrategias de parcheo A-F, catálogo ampliado de perfiles de modders, plantilla de case study, Morphe patcher, PMS Hook/IO redirection, Android 16+ Developer Verifier bypass, PairipCore bypass, Frida Gadget embedding, ecosistema completo de herramientas (parcheo, signature killers, Frida anti-detección, hooking nativo, virtual engines, obfuscación, Unity/IL2CPP, mod menus, hex editing), foros y comunidades de referencia, herramientas rusas/chinas de 4PDA (MT Manager, NP Manager, Batch ApkTool, Lucky Patcher, APK Editor, Frida Injector PE), y batch-apktool.sh (equivalente Linux de Batch ApkTool).
