@@ -1282,4 +1282,14 @@ find . -name "app.*.dwarf" -o -name "split-debug-info"
 ### BoringSSL Source
 
 - **ssl_x509.cc** — https://github.com/google/boringssl/blob/main/ssl/ssl_x509.cc (target: `ssl_crypto_x509_session_verify_cert_chain`)
+
+---
+
+## Skills relacionados
+
+- **`android-reverse-engineering`** — RE general de APKs Android (Java, Kotlin, nativo, SSL pinning, root bypass, Frida, MASTG). Contiene un resumen de triaje Flutter que remite a este skill para análisis profundo.
+- **`apk-modding`** — Playbook operativo para modificar, parchear y hackear APKs (smali patching, signature killers, PairipCore bypass, Frida Gadget). Usar cuando el objetivo sea modificar el comportamiento de la app Flutter.
+- **`ghidra-pyghidra`** — Ghidra + pyghidra para análisis binario. Usar para análisis estático profundo de `libapp.so` y `libflutter.so` cuando blutter no sea suficiente.
+- **`httptoolkit-android`** — HTTP Toolkit en Android. Usar para captura de tráfico cuando reFlutter no sea viable o se necesite un enfoque alternativo.
+- **`android-cleanup`** — Limpieza post-pentesting. Usar después de sesiones de dynamic analysis con Frida o reFlutter.
 - **handshake.cc** — https://github.com/google/boringssl/blob/main/ssl/handshake.cc (target: `ssl_verify_peer_cert`)

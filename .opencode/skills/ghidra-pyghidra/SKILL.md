@@ -432,3 +432,13 @@ pyghidra 3.1.0 también intenta usar `JAVA_HOME` como fallback si java no está 
 ---
 
 > **Nota importante**: pyhidra (el proyecto original de DC3) fue absorbido por Ghidra bajo el nombre **PyGhidra**. pyhidra 1.3.0 (oct 2024) fue su última versión y solo da soporte hasta Ghidra 11.3/12.0. Para Ghidra 12.1.2+, usa siempre **pyghidra 3.x**.
+
+---
+
+## Skills relacionados
+
+- **`android-reverse-engineering`** — RE general de APKs Android. Contiene un workflow específico de Ghidra para ARM64 (trazado de abort(), FindCrypt, atajos) que complementa este skill.
+- **`apk-modding`** — Playbook operativo para modificar APKs. Usa Ghidra para análisis nativo cuando hay signature checks en `.so` (JNI_OnLoad, DEX integrity hash).
+- **`flutter-reverse-engineering`** — RE de Flutter/Dart. Usa Ghidra para análisis estático de `libapp.so` y `libflutter.so` cuando blutter no sea suficiente.
+- **`httptoolkit-android`** — HTTP Toolkit en Android. No usa Ghidra directamente, pero complementa para análisis de tráfico.
+- **`android-cleanup`** — Limpieza post-pentesting. No usa Ghidra, pero complementa para restaurar el dispositivo después de dynamic analysis.

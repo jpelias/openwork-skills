@@ -5,7 +5,7 @@ description: >
   or Frida instrumentation sessions. Use when the device has no internet, apps won't
   load, browsers show blank pages, or traffic is still being redirected to a dead proxy.
   Covers: global proxy settings, iptables NAT, bind mounts, CA certificates,
-  WebView command-line flags, Frida Gadget, and Magisk DenyList.
+  WebView command-line flags, Frida Gadget files, Magisk bypass modules, and SELinux.
 ---
 
 # Android Cleanup Skill
@@ -37,7 +37,10 @@ adb shell settings list global | grep -i proxy
   → mount | grep bind                     →  ¿bind mounts de CA activos?
   → ls /data/local*/*command-line*        →  ¿flags de WebView inyectados?
   → ps -A | grep frida                    →  ¿frida-server corriendo?
-  → ls /data/local/tmp/libgadget*         →  ¿Frida Gadget presente?
+  → ls /data/local/tmp/*gadget*            →  ¿Frida Gadget presente?
+  → ls /data/local/tmp/*frida*             →  ¿Frida server binarios?
+  → ls /data/adb/modules/                  →  ¿Módulos Magisk de bypass?
+  → getenforce                            →  ¿SELinux Permissive?
 ```
 
 ## Cleanup Script (run in order)
@@ -48,9 +51,18 @@ adb shell settings list global | grep -i proxy
 # Kill frida-server if running
 adb shell su -c "killall frida-server 2>/dev/null; killall frida-server-* 2>/dev/null"
 
-# Remove Frida Gadget
+# Remove Frida server binary itself (skill was missing this)
+adb shell su -c "rm -f /data/local/tmp/frida-server /data/local/tmp/frida-server-*"
+
+# Remove Frida Gadget (libgadget pattern + Objection-style uuid-named gadgets)
 adb shell su -c "rm -f /data/local/tmp/libgadget.so /data/local/tmp/libgadget.config.so"
+adb shell su -c "rm -f /data/local/tmp/frida-gadget-*.so /data/local/tmp/frida-gadget-*.config"
+adb shell su -c "rm -f /data/local/tmp/libfrida-gadget*.so"
 adb shell su -c "rm -rf /data/local/tmp/android-unpinner"
+
+# Remove leftover Frida scripts and binaries
+adb shell su -c "rm -f /data/local/tmp/frida_script.js /data/local/tmp/*.js"
+adb shell su -c "rm -f /data/local/tmp/frida*"
 ```
 
 ### 2. Remove system-wide HTTP proxy (CRITICAL)
@@ -70,9 +82,13 @@ adb shell su -c "iptables -t filter -F"
 adb shell su -c "iptables -t mangle -F"
 ```
 
-Also check for custom chains left by pentesting tools:
+Also check for and delete custom chains left by pentesting tools:
 ```bash
+# List non-system chains
 adb shell su -c "iptables-save | grep -vE '^(#|:.*\[)' | grep -vE 'oem_|fw_|bw_|st_|tetherctrl_|routectrl_|wakeupctrl_|idletimer_'"
+
+# Delete custom chains in all tables (repeat for each table if needed)
+adb shell su -c "iptables -t nat -X 2>/dev/null; iptables -t filter -X 2>/dev/null; iptables -t mangle -X 2>/dev/null"
 ```
 
 ### 4. Unmount CA certificate bind mounts
@@ -91,7 +107,8 @@ done"
 # List suspicious apps
 adb shell pm list packages | grep -iE 'proxy|vpn|tunnel|packet|capture|firewall|adguard'
 
-# Uninstall if needed
+# Check if any of these are pentesting artifacts and uninstall them:
+# Common offenders: com.greenecomputing.linphone, capture.packet, app.greyshirts.sslcapture
 # adb uninstall <package>
 ```
 
@@ -102,6 +119,7 @@ adb shell pm list packages | grep -iE 'proxy|vpn|tunnel|packet|capture|firewall|
 adb shell su -c "rm -f /data/local/tmp/webview-command-line \
   /data/local/tmp/android-webview-command-line \
   /data/local/tmp/content-shell-command-line \
+  /data/local/tmp/chrome-command-line \
   /data/local/webview-command-line \
   /data/local/android-webview-command-line \
   /data/local/chrome-command-line \
@@ -112,7 +130,7 @@ adb shell su -c "rm -f /data/local/tmp/webview-command-line \
 
 ```bash
 adb shell su -c "rm -rf /data/local/tmp/.httptoolkit"
-adb shell su -c "rm -f /data/local/tmp/httptoolkit-ca.pem /data/local/tmp/*.pem"
+adb shell su -c "rm -f /data/local/tmp/httptoolkit-ca.pem /data/local/tmp/httptoolkit-*.pem /data/local/tmp/mitm-*.pem"
 adb shell su -c "rm -f /data/local/tmp/adirf-server*"
 ```
 
@@ -124,7 +142,45 @@ adb shell rm -f /sdcard/mitm-der.cer /sdcard/htk-ca.der
 adb shell rm -f /sdcard/hosts /sdcard/base.apk /sdcard/manager.apk
 ```
 
-### 9. Verify cleanup
+### 9. Remove Magisk modules that bypass security
+
+Magisk modules can persist signature bypass, SELinux manipulation, or other hooks across reboots.
+These are **not cleaned** by regular uninstall and can silently interfere with apps.
+
+```bash
+# List all installed Magisk modules
+adb shell su -c "ls /data/adb/modules/"
+
+# Known dangerous modules — remove them:
+# sigbypass   → disables APK signature verification (breaks PairipCore, Play Integrity)
+# riru-*      → Riru/Xposed hooks
+# zygisk-*    → Zygisk modules
+adb shell su -c "rm -rf /data/adb/modules/sigbypass"
+adb shell su -c "rm -rf /data/adb/modules/riru_*"
+```
+
+**⚠️ After removing Magisk modules, a reboot is required.**
+
+### 10. Restore SELinux to Enforcing
+
+Pentesting tools often set SELinux to `Permissive` to bypass restrictions.
+This should be restored to `Enforcing` for normal operation.
+
+```bash
+# Check current state
+adb shell getenforce
+
+# Restore to Enforcing if Permissive
+adb shell su -c "setenforce 1"
+
+# Verify
+adb shell getenforce
+```
+
+**Note:** `setenforce 1` is temporary (until next reboot). For a permanent change,
+ensure no Magisk module or init script is calling `setenforce 0`.
+
+### 11. Verify cleanup
 
 ```bash
 # Proxy settings must be empty
@@ -139,11 +195,20 @@ adb shell su -c "mount | grep bind"
 # No frida processes
 adb shell su -c "ps -A | grep -i frida"
 
+# No frida files
+adb shell su -c "ls /data/local/tmp/*frida* /data/local/tmp/*gadget* 2>/dev/null"
+
 # No command-line flag files
 adb shell su -c "find /data/local /data/local/tmp -name '*command-line*' 2>/dev/null"
+
+# No dangerous Magisk modules
+adb shell su -c "ls /data/adb/modules/ | grep -iE 'sigbypass|riru|bypass'"
+
+# SELinux must be Enforcing
+adb shell getenforce
 ```
 
-### 10. Reboot
+### 12. Reboot
 
 ```bash
 adb reboot
@@ -189,6 +254,9 @@ adb shell su -c "magisk --denylist rm <package>"
 | SSL errors in all apps | CA bind mount still active | Step 4 |
 | Specific apps blocked from network | Magisk DenyList interfering | Magisk section |
 | Network works but specific ports blocked | Leftover iptables rules | Step 3 |
+| App silently fails (no crash, no error) | Magisk `sigbypass` module or Frida Gadget leftover | Steps 1 + 9 |
+| `libpairipcore.so` crash / PairipCore fails | `sigbypass` hooking PackageManager | Step 9 |
+| SELinux Permissive persists after reboot | Magisk module or init script calling `setenforce 0` | Step 10 + check `service.sh` |
 
 ## Base Directory
 

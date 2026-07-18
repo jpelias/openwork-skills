@@ -571,7 +571,13 @@ At the end of an RE session, you must produce:
 
 ## Flutter / Dart Reverse Engineering
 
-Flutter compila Dart a AOT snapshots en `libapp.so` + `libflutter.so`. El análisis estático es limitado; la mayoría del trabajo es dinámico o de ingeniería de snapshots.
+> **Skill dedicado:** `.opencode/skills/flutter-reverse-engineering/SKILL.md` (1285 líneas)
+>
+> Flutter merece un skill propio porque: `libapp.so` (AOT snapshot), Dart VM internals (Object Pool, compressed pointers, QK Color objects), blutter, reFlutter, BoringSSL hooking — son temas que requieren tratamiento profundo.
+>
+> **Usar el skill dedicado para:** análisis completo de snapshots, Dart VM internals, modificación de temas/colores, Frida Gadget embedding en Flutter.
+>
+> **Resumen rápido aquí para triaje:**
 
 ### Detección
 
@@ -588,52 +594,16 @@ strings libflutter.so | grep -oP 'flutter_engine_version=\K.*'
 strings libflutter.so | grep -oP 'dart_sdk_version=\K.*'
 ```
 
-### Herramientas
-
-| Herramienta | Repo | Uso |
-|---|---|---|
-| **reFlutter** | `nicolo-ribaudo/reflutter` | Parchea Flutter engine para inspección de tráfico y snapshots. |
-| **blutter** | `nicolo-ribaudo/blutter` | Análisis de Dart AOT snapshots. Extrae clases y métodos. |
-| **Doldrums** | `nicolo-ribaudo/doldrums` | Parser de Dart AOT snapshots. |
-| **dart_snapshot_parser** | `nicolo-ribaudo/dart_snapshot_parser` | Parser de snapshots de Dart. |
-| **frida-dart** | scripts de la comunidad | Hooks de Frida para Dart runtime. |
-
-### Estrategia Flutter
-
-```bash
-# 1. Detectar Flutter (ver arriba)
-# 2. Extraer version de Flutter (ver arriba)
-# 3. reFlutter para parchear engine (laboratorio)
-pip install reflutter
-reflutter app.apk
-# Genera app.apk con engine parcheado (desactiva pinning, permite sniffing)
-
-# 4. blutter para análisis de snapshot
-python3 blutter.py path/to/libapp.so output_dir/
-# Genera output_dir/ con:
-#   - pp.txt: object pool
-#   - objs.txt: objetos
-#   - blutter_frida.js: script Frida con offsets de métodos
-
-# 5. Frida para hook dinámico
-# Usar los offsets de blutter_frida.js con Interceptor.attach
-```
-
 ### SSL Pinning en Flutter
 
 Flutter usa **BoringSSL compilado dentro de `libflutter.so`**, no el del sistema. El pinning no se puede bypass con NSC ni con hooks de Java TrustManager.
 
 **Opciones:**
 1. **reFlutter** — parchea el engine para deshabilitar pinning (reempaqueta el APK).
-2. **Hook nativo** — buscar `ssl_verify_cert_chain` o `SSL_CTX_set_verify` en `libflutter.so` y hookear con Frida.
-3. **iptables transparent** — redirigir tráfico a mitmproxy en modo transparente (requiere que el engine no valide pinning, o combinar con reFlutter).
+2. **Hook nativo** — buscar `ssl_verify_cert_chain` o `SSL_CTX_set_verify` en `libflutter.so` y hookear con Frida. Ver script `scripts/flutter_ssl_bypass.js`.
+3. **iptables transparent** — redirigir tráfico a mitmproxy en modo transparente.
 
-### Limitaciones conocidas
-
-- Los nombres de métodos Dart no están en strings; se reconstruyen desde el snapshot.
-- El pinning en Flutter usa `BoringSSL` compilado dentro de `libflutter.so`.
-- reFlutter parchea el engine para deshabilitar pinning, pero requiere reempaquetar y firmar.
-- blutter necesita la versión exacta de Flutter para parsear el snapshot correctamente.
+**Para análisis profundo de Flutter, cargar el skill `flutter-reverse-engineering`.**
 
 ---
 
@@ -1145,6 +1115,14 @@ curl -X POST http://localhost:8000/api/v1/download_pdf \
 
 ## Ghidra for ARM64 Native Analysis
 
+> **Skill dedicado:** `.opencode/skills/ghidra-pyghidra/SKILL.md` (434 líneas)
+>
+> Ghidra + pyghidra como herramienta general de análisis binario. Cubre: instalación, análisis headless, scripting Python con API de Ghidra, decompilación automatizada, apertura de proyectos.
+>
+> **Usar el skill dedicado para:** scripting pyghidra, análisis headless automatizado, API de Ghidra en Python.
+>
+> **Workflow específico para Android ARM64 aquí:**
+
 ### Workflow de análisis nativo
 
 ```bash
@@ -1159,6 +1137,15 @@ rabin2 -zz libnative.so > r2_strings.txt
 # 3. Ghidra headless
 /opt/ghidra/support/analyzeHeadless /tmp ghidra_proj -import libnative.so \
   -postScript DecompileAll.java -scriptPath /opt/ghidra/Ghidra/Features/Decompiler/
+
+# 4. pyghidra para scripting Python nativo
+python3 -c "
+import pyghidra
+with pyghidra.open_program('libnative.so') as prog:
+    fm = prog.getFunctionManager()
+    for func in fm.getFunctions(True):
+        print(f'{func.getName()} @ {func.getEntryPoint()}')
+"
 ```
 
 ### Ghidra GUI — Trazado de abort()
@@ -1198,6 +1185,8 @@ Plugin que identifica constantes criptográficas y algoritmos en código binario
 - CRC32 table
 - MD5 init values
 - SHA-256 constants
+
+**Para scripting avanzado con pyghidra, cargar el skill `ghidra-pyghidra`.**
 
 ---
 
@@ -1293,6 +1282,16 @@ Referencia completa de herramientas en `reports/android-re-toolbox.md` (16 secci
 
 ---
 
+## Skills relacionados
+
+- **`apk-modding`** — Playbook operativo para modificar, parchear y hackear APKs (smali patching, signature killers, PairipCore bypass, Frida Gadget, Unity/IL2CPP). Usar cuando el objetivo sea modificar el comportamiento de la app, no solo analizarla.
+- **`flutter-reverse-engineering`** — RE profundo de Flutter/Dart (libapp.so, Dart VM internals, blutter, reFlutter, BoringSSL hooking, theme/color modification). Usar cuando el APK sea Flutter y se necesite análisis profundo más allá del triaje.
+- **`ghidra-pyghidra`** — Ghidra + pyghidra como herramienta (análisis headless, scripting Python con API de Ghidra, decompilación automatizada). Usar para scripting pyghidra y análisis headless automatizado.
+- **`httptoolkit-android`** — HTTP Toolkit en Android (mecanismo de interceptación VPN + Magisk tmpfs cert, troubleshooting, root vs non-root). Usar para captura de tráfico cuando Frida no sea necesario.
+- **`android-cleanup`** — Limpieza de dispositivo Android post-pentesting (proxy global, iptables NAT, bind mounts, CA certificates, Frida Gadget, Magisk bypass modules, SELinux). Usar después de sesiones de dynamic analysis.
+
+---
+
 ## Changelog
 
-- 2026-07-18: Ampliación con Flutter/Dart RE, Kotlin deep dive, desofuscación, criptoanálisis, PairipCore/Dex2C, Play Integrity/SafetyNet, anti-debugging extendido, OWASP MASTG/MASVS, MobSF automation, Ghidra ARM64 workflow, Frida advanced (CModule, memory scan, DexClassLoader, anti-suicide), toolbox reference.
+- 2026-07-18 (v2): Ampliación con Flutter/Dart RE (referencia cruzada a skill dedicado), Kotlin deep dive, desofuscación, criptoanálisis, PairipCore/Dex2C, Play Integrity/SafetyNet, anti-debugging extendido, OWASP MASTG/MASVS, MobSF automation, Ghidra ARM64 workflow (referencia cruzada a skill dedicado + pyghidra), Frida advanced (CModule, memory scan, DexClassLoader, anti-suicide), toolbox reference, referencias cruzadas a skills relacionados.
