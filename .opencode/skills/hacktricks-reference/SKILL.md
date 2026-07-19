@@ -8,6 +8,12 @@ description: >
 
 Indice de recursos externos. Para tecnicas y scripts, consultar los skills especializados.
 
+## IoT / Tuya / Smart Life
+
+- [tuya-sign-hacking (135⭐)](https://github.com/nalajcie/tuya-sign-hacking) — Reverse del algoritmo HMAC-SHA256 de la nueva API Tuya: BMP steganography con Gaussian elimination, native RE de `libjnimain.so`, Frida + Ghidra + gdb
+- [jpelias/smartlife-reverse-engineering](https://github.com/jpelias/smartlife-reverse-engineering) — RE de Smart Life v7.9.0: SSL bypass, Frida, APIs
+- [jpelias/tuya-local-panel](https://github.com/jpelias/tuya-local-panel) — Panel local Tuya
+
 ## Wikis y documentacion
 
 - [OWASP MASTG v2.0.0 (Junio 2026)](https://mas.owasp.org/MASTG/) — Guia oficial OWASP: 80+ tecnicas documentadas (MASTG-TECH-0001 a 0174), tests por categoria MASVS, tools reference, best practices
