@@ -344,6 +344,27 @@ frida --codeshare L0WK3Y-IAAN/crypto-detection -f com.app
 
 ---
 
+## Flutter RE Resources
+
+### rloura — Reverse Engineering Flutter for Android (2020)
+- **Doldrums**: snapshot parser para Dart 2.10 (https://github.com/rscloura/Doldrums)
+- Snapshot format: magic `0xf5f5dcdc`, header (size, kind, version, features), LEB128 encoding, clusters (150+ Dart types con class IDs en `class_id.h`)
+- `libapp.so` = VM isolate snapshot + Isolate snapshot, cada uno con `.text` (instructions) y `.rodata` (data/heap)
+- Code objects: offsets al codigo nativo compilado en `_kDartIsolateSnapshotInstructions`
+- ARM64: `x27` es registro inmutable que apunta a array de recursos (strings, etc.)
+- Runtime: Frida + Medusa para leer `x27` + offset → reconstruir strings
+
+### tinyhack — Reversing Flutter app by recompiling Flutter Engine (2021)
+- https://tinyhack.com/2021/03/07/reversing-a-flutter-app-by-recompiling-flutter-engine/
+
+### JEB — Dart AOT snapshot helper plugin
+- https://www.pnfsoftware.com/blog/dart-aot-snapshot-helper-plugin-to-better-analyze-flutter-based-apps/
+
+### Darter — Flutter parser for Dart 2.5
+- https://github.com/mildsunrise/darter
+
+---
+
 ## Changelog
 
 
