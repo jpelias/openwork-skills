@@ -10,8 +10,9 @@ Indice de recursos externos. Para tecnicas y scripts, consultar los skills espec
 
 ## Wikis y documentacion
 
+- [OWASP MASTG v2.0.0 (Junio 2026)](https://mas.owasp.org/MASTG/) — Guia oficial OWASP: 80+ tecnicas documentadas (MASTG-TECH-0001 a 0174), tests por categoria MASVS, tools reference, best practices
+- [OWASP MASTG GitHub](https://github.com/OWASP/mastg) — `techniques/android/`, `tests/android/`, `tools/android/`, `Crackmes/`
 - [HackTricks Wiki — Android Pentesting](https://hacktricks.wiki/en/mobile-pentesting/android-app-pentesting/)
-- [OWASP MASTG — Android Security Testing](https://mas.owasp.org/MASTG/)
 - [OWASP MASTG-TECH-0156 — Reverse Engineering Flutter](https://mas.owasp.org/MASTG/techniques/android/MASTG-TECH-0156/)
 
 ## Writeups y casos practicos
