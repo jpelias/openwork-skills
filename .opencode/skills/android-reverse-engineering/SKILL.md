@@ -1434,7 +1434,9 @@ Referencia completa de herramientas en `reports/android-re-toolbox.md` (16 secci
 
 > **Workflow recomendado:** usar `android-reverse-engineering` para triaje y análisis, luego `apk-modding` para implementar parches persistentes en smali/nativo.
 
-- **`hacktricks-reference`** — Indice completo de herramientas (15+), checklist 2025-2026, tecnicas avanzadas (AIDL/Binder, App Links, dual-signing, LSPosed SMS, Unity RCE), y cursos de HackTricks Wiki.
+- **`android-pentesting-checklist`** — Checklist estructurado estatico + dinamico + tecnicas avanzadas (AIDL/Binder, App Links, dual-signing, LSPosed, Unity RCE).
+- **`android-ctf-writeups`** — 13 tecnicas practicas de CTFs reales (NativeFunction, stub .so, strcmp hook, WebView XSS, crypto detection).
+- **`hacktricks-reference`** — Indice ligero de enlaces externos (HackTricks Wiki, bi0s, Flutter RE, laboratorios, cursos).
 - **`frida-expert`** — Cookbook completo de Frida para Android: SSL pinning (14 librerias), root bypass (5 vectores), anti-Frida, crypto intercept, OkHttp3 interceptor, native connect hook, Flutter BoringSSL, CModule, memory scanning. Usar como referencia principal para instrumentacion dinamica.
 - **`apk-modding`** — Playbook operativo para modificar, parchear y hackear APKs (smali patching, signature killers, PairipCore bypass, Frida Gadget, Unity/IL2CPP). Usar cuando el objetivo sea modificar el comportamiento de la app, no solo analizarla.
 - **`flutter-reverse-engineering`** — RE profundo de Flutter/Dart (libapp.so, Dart VM internals, blutter, reFlutter, BoringSSL hooking, theme/color modification). Usar cuando el APK sea Flutter y se necesite análisis profundo más allá del triaje.
