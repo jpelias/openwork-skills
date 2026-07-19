@@ -316,6 +316,32 @@ for (var i = 0; i < longs.length; i++) console.log(f.getString(longs[i]));
 - `firmware.bin` en `res/raw/` → 7zip con password `nullc0n_2025` de `strings.xml`
 - Extrae ELF x86-64 ejecutable → `strings firmware.bin | grep flag`
 
+### Knight (P3RF3CTR00T CTF) — Crypto detection universal
+- AES-encrypted flag + base64 ciphertext comparada contra input
+- **Frida CodeShare crypto-detection**: hookea TODOS los metodos criptograficos y loguea output en cleartext
+```bash
+frida --codeshare L0WK3Y-IAAN/crypto-detection -f com.app
+```
+
+### Freeda Native Hook (HeroCTF) — Interceptor.attach + retval.readCString()
+- RootBeer bypass (mismo script que Freeda-Not-Root)
+- `libv3.so` con `get_flag()` que retorna puntero a flag
+- **Tecnica clave**: `Interceptor.attach` + `onLeave: retval.readCString()` para leer flag directamente
+
+### Apkocalypse (l3ak CTF) — Anti-Frida thread + fwrite hook
+- `pthread_create` lanza thread anti-Frida (`FUN_001627d0`) que detecta y termina la app
+- **Bypass**: `Interceptor.replace(pthread_create, ...)` filtrando threads sospechosos
+- **Hook fwrite**: capturar flag antes de que el archivo sea eliminado con `unlink()`
+- Script combinado: Java.perform (root bypass) + Interceptor.replace (anti-thread) + fwrite hook
+
+### A Strange Door (Payatu CTF) — Native JNI retval.replace(1)
+- `checkPasscode(String)` en `libctf.so` retorna bool
+- `Interceptor.attach` + `retval.replace(1)` fuerza true → `decryptflag()` se ejecuta
+
+### Droid Cryptor (m0leC0n CTF) — AES static key
+- `SUPER_SECRET_KEY = "YWYwYjAyYjkzNmRhZjU3Yg=="` (base64)
+- AES/ECB/PKCS5Padding con IV dado → CyberChef
+
 ---
 
 ## Changelog
