@@ -23,6 +23,8 @@ Playbook operativo para modificar APKs Android desde este workspace Linux. Todas
 
 4. **Solo reensamblar los DEX modificados.** Mantener los demás originales.
 
+5. **Limpiar el dispositivo después del modding.** Proxy, certificados CA, módulos Magisk temporales y Frida Gadget pueden dejar el dispositivo inestable. Usar el skill `android-cleanup` al finalizar.
+
 ---
 
 ## Herramientas del workspace (todas disponibles)
@@ -42,6 +44,8 @@ frida-ps     ~/.local/bin/frida-ps     —        — listar procesos
 objection    ~/.local/bin/objection    1.12.5   — wrapper Frida
 r2           /usr/local/bin/r2         6.1.9    — disasm/hex patch nativo
 ghidra       /opt/ghidra/              12.x     — análisis nativo ARM64
+httptoolkit  /usr/bin/httptoolkit      1.26.1   — interceptación de tráfico
+mitmdump     ~/.local/bin/mitmdump     12.2.3   — proxy CLI
 python3      /usr/bin/python3          3.13     — scripting
 keytool      /usr/bin/keytool          —        — generar keystores
 openssl      /usr/bin/openssl          —        — certificados
@@ -66,6 +70,13 @@ Scripts incluidos en `.opencode/skills/apk-modding/scripts/`:
 ```bash
 # Metadata del APK
 aapt dump badging app.apk | head -20
+
+# Si es un bundle .apks / .xapk, extraer base.apk primero
+unzip -l app.apk | grep -q "base.apk" && unzip -o app.apk "base.apk" -d extracted/
+[ -f extracted/base.apk ] && BASE=extracted/base.apk || BASE=app.apk
+
+# Extraer splits instalados desde dispositivo (si es necesario)
+# adb shell pm path com.target.app | cut -d: -f2 | xargs -I{} adb pull {}
 
 # Contar DEX y .so
 unzip -l app.apk | grep -c "classes.*\.dex"
@@ -368,13 +379,37 @@ r2 -A libnative.so
 ### Runtime (Frida, sin parchear APK)
 
 ```javascript
-// Hook PMS para spoofear firma
+// Spoof signature hash at runtime without modifying the APK
 Java.perform(function() {
     var ActivityThread = Java.use("android.app.ActivityThread");
-    var sPackageManager = ActivityThread.sPackageManager.value;
-    // ... dynamic proxy para interceptar getPackageInfo
+    var PackageManager = Java.use("android.content.pm.PackageManager");
+    var Signature = Java.use("android.content.pm.Signature");
+
+    // Replace the system PackageManager with a dynamic proxy
+    var currentApplication = ActivityThread.currentApplication();
+    var packageManager = currentApplication.getPackageManager();
+
+    var proxy = Java.registerClass({
+        name: "com.example.SignatureSpoof",
+        implements: [PackageManager],
+        methods: {
+            getPackageInfo: function(packageName, flags) {
+                var pi = packageManager.getPackageInfo(packageName, flags);
+                if ((flags & PackageManager.GET_SIGNATURES.value) !== 0 && pi.signatures.value) {
+                    var spoof = Signature.$new("3082..."); // base64 DER of original cert
+                    pi.signatures.value = Java.array("android.content.pm.Signature", [spoof]);
+                }
+                return pi;
+            }
+        }
+    });
+
+    // Note: full implementation requires proxying all PackageManager methods.
+    // Use only for research on apps you own.
 });
 ```
+
+For a complete runtime signature spoof, use existing modules like **LSPosed CorePatch** or **Xposed Signature Spoofing** modules, which handle all PackageManager methods correctly.
 
 ---
 
@@ -515,6 +550,21 @@ Repos:
 
 ---
 
+## Troubleshooting
+
+| Síntoma | Causa probable | Solución |
+|---|---|---|
+| `INSTALL_FAILED_UPDATE_INCOMPATIBLE` | Certificado de firma diferente al original | Desinstalar app original antes de instalar el mod |
+| `INSTALL_FAILED_INVALID_APK` | Compresión incorrecta o APK no alineado | Verificar `zipalign -p 4` y reglas de compresión |
+| `NoClassDefFoundError` al iniciar | Se borró `META-INF/services/` o una clase de modder | Restaurar `META-INF/services/`; no borrar clases de modders |
+| App crashea tras parche smali | Registros insuficientes o tipo de retorno incorrecto | Ajustar `.registers` y verificar tipos de retorno |
+| `libfrida-gadget.so` no carga | Arquitectura incorrecta o config ausente | Usar arm64, colocar config en `assets/frida-gadget.config` |
+| Play Integrity revierte el mod | Verificación server-side del token | No se puede parchear; ocultar root o modificar backend propio |
+| Tráfico no se intercepta | QUIC/HTTP3 o SSL pinning nativo | Usar HTTP Toolkit o hooks específicos de BoringSSL |
+| Diálogo de modder persiste | Call-sites no eliminados en todas las Activities | Buscar `invoke-static` a métodos de modder en todos los DEX |
+
+---
+
 ## Referencias
 
 - **Cases:** `cases/` (GPS Emulator, CamScanner, YouTube Morphe, AdGuard, GPS Data, Liteapks Store)
@@ -525,6 +575,9 @@ Repos:
 
 ### Skills relacionados
 
+> **Workflow recomendado:** usar `android-reverse-engineering` para triaje, análisis de protecciones y extracción de API endpoints; luego `apk-modding` para implementar parches persistentes.
+
+- **`frida-expert`** — Cookbook completo de Frida para Android: SSL pinning (14 librerias), root bypass (5 vectores), crypto intercept, native connect hook. Usar para bypass en runtime antes o en lugar de parcheo smali.
 - **`android-reverse-engineering`** — RE general de APKs (Java, Kotlin, nativo, SSL pinning, root bypass, Frida, MASTG). Usar para análisis e investigación antes de modding.
 - **`flutter-reverse-engineering`** — RE profundo de Flutter/Dart (libapp.so, Dart VM internals, blutter, reFlutter, BoringSSL hooking). Usar cuando el APK sea Flutter.
 - **`ghidra-pyghidra`** — Ghidra + pyghidra como herramienta (análisis headless, scripting Python, decompilación automatizada). Usar para análisis nativo ARM64 profundo.
@@ -535,4 +588,5 @@ Repos:
 
 ## Changelog
 
+- 2026-07-19 (v5): Actualización 2026: regla de oro de cleanup, herramientas con versiones (HTTP Toolkit, mitmdump), manejo de bundles .apks/.xapk en triaje, bypass runtime de signature checks expandido, sección de troubleshooting, referencias cruzadas reforzadas a `android-reverse-engineering`.
 - 2026-07-18 (v4): Reescrito como playbook operativo para el agente. Enfoque en herramientas Linux PC del workspace. Eliminadas herramientas on-device secundarias. Flujo estándar de 7 fases. Estrategias A-F. Detección de modders 2025-2026. Bypass de signature checks (Java, nativo, runtime). PairipCore. Frida Gadget. Unity/IL2CPP. Android 16+ verifier. Morphe patcher. Scripts de automatización.

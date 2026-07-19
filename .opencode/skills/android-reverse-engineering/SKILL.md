@@ -18,7 +18,7 @@ description: >
 
 ## Prerequisites
 
-Requires **Java JDK 17+**, **jadx**, and optionally **Fernflower/Vineflower** + **dex2jar** for better decompilation quality. For the dynamic flow: **Frida**, **mitmproxy/mitmdump**, **Objection**, and a device/emulator with **Magisk** or **KernelSU** if root is needed.
+Requires **Java JDK 17+**, **jadx 1.5.1+**, and optionally **Fernflower/Vineflower** + **dex2jar** for better decompilation quality. For the dynamic flow: **Frida 17.15.3+**, **mitmproxy/mitmdump 12.x+**, **Objection 1.12.5+**, and a device/emulator with **Magisk**, **KernelSU**, or **KernelSU-Next** if root is needed.
 
 ```bash
 # Check what you have
@@ -26,6 +26,7 @@ jadx --version
 java -version
 frida --version
 mitmdump --version
+apktool --version
 ```
 
 If something is missing, install with the system package manager (apt, brew, pipx, etc.) or consult the official documentation for each tool.
@@ -108,6 +109,18 @@ frida -U \
 | **HTTP Toolkit Desktop App** | Whenever you can. Click → done. |
 | **Frida native-connect-hook.js** | If you don't have HTTP Toolkit or it doesn't work |
 | **mitmdump --mode transparent on device** | If you have Python on the device and root |
+
+### Edge cases: QUIC/HTTP3 and mTLS
+
+**QUIC/HTTP3:** Some apps (Google apps, TikTok, Discord) use QUIC over UDP. `native-connect-hook.js` hooks TCP `connect()`, so QUIC traffic may bypass the proxy. Options:
+1. Force the app to downgrade to HTTP/2 by blocking UDP 443 outbound (requires root/iptables).
+2. Use HTTP Toolkit, which handles QUIC interception transparently.
+3. Hook the Cronet/QUIC layer and disable QUIC via `CronetEngine.Builder.enableQuic(false)` if the app exposes a Java API.
+
+**mTLS (Client Certificates):** If the server demands a client certificate, mitmproxy cannot complete the TLS handshake. You must:
+1. Extract the client cert + private key from the APK (search for `.p12`, `.pfx`, `KeyStore`, `PrivateKey`, `X509KeyManager`).
+2. Configure mitmproxy with the client cert: `mitmdump --client-cert cert.pem --client-key key.pem`.
+3. Or hook `X509KeyManager.chooseClientAlias` / `getPrivateKey` / `getCertificateChain` to return the app's client cert.
 
 ## Android RE Fundamentals
 
@@ -272,9 +285,39 @@ OkHttp?  → Layer 1 + Layer 2
 Ktor Client? → Layer 1 (uses Android's TrustManagerImpl, doesn't go through OkHttp)
 Cronet/gRPC? → Layer 6 (Native BoringSSL, SSL_CTX_set_custom_verify)
 WebView? → + Layer 3
-Ionic/Cordova? → DNAT + mitmdump (system proxy does NOT work)
+Ionic/Cordova? → native-connect-hook.js (system proxy does NOT work)
 NDK?     → Layer 5 (curl_easy_setopt or BoringSSL)
 None? → search for custom TrustManager in jadx → specific hook
+```
+
+### Client Certificate Pinning Bypass
+
+Some apps pin a specific client certificate for mutual TLS (mTLS). If you need to replay requests from another context:
+
+```javascript
+// Hook X509KeyManager to return the app's client certificate
+Java.perform(function() {
+    var X509KeyManager = Java.use("javax.net.ssl.X509KeyManager");
+    X509KeyManager.chooseClientAlias.implementation = function(keyTypes, issuers, socket) {
+        console.log("[mTLS] chooseClientAlias called");
+        return this.chooseClientAlias(keyTypes, issuers, socket);
+    };
+    X509KeyManager.getPrivateKey.implementation = function(alias) {
+        console.log("[mTLS] getPrivateKey for alias: " + alias);
+        return this.getPrivateKey(alias); // dump or reuse
+    };
+    X509KeyManager.getCertificateChain.implementation = function(alias) {
+        var chain = this.getCertificateChain(alias);
+        console.log("[mTLS] Certificate chain length: " + chain.length);
+        return chain;
+    };
+});
+```
+
+To extract the client cert statically, search for:
+```bash
+rg -n 'KeyStore|PrivateKey|X509KeyManager|KeyManagerFactory' jadx-out/
+unzip -l app.apk | grep -iE '\.p12|\.pfx|\.pem|\.bks'
 ```
 
 ### Cert Injection (THE CRITICAL ONE — 825 bytes or nothing)
@@ -288,6 +331,12 @@ adb shell su -c "chmod 644 /system/etc/security/cacerts/$HASH.0; mount -o ro,rem
 ```
 
 ## Frida Cookbook
+
+> **Skill dedicado:** `.opencode/skills/frida-expert/SKILL.md`
+>
+> El skill `frida-expert` contiene el cookbook completo de Frida con scripts verificados de CodeShare y HTTP Toolkit: SSL pinning (14 librerias), root bypass (5 vectores), anti-Frida, crypto intercept, OkHttp3 interceptor, native connect hook, Flutter BoringSSL, CModule, memory scanning. Usarlo como referencia principal.
+>
+> Aqui solo se mantienen los snippets esenciales para consulta rapida:
 
 ```javascript
 // === SSL/TLS ===
@@ -307,6 +356,52 @@ Java.use('javax.net.ssl.HostnameVerifier').verify.implementation=function(){retu
 // SystemProperties.get → ro.debuggable=0, ro.secure=1
 // Build.TAGS → "release-keys"
 // Debug.isDebuggerConnected → false
+
+Java.perform(function() {
+    // 1. File.exists
+    var File = Java.use("java.io.File");
+    File.exists.implementation = function() {
+        var path = this.getAbsolutePath();
+        var blocked = ["/system/bin/su","/system/xbin/su","/sbin/su","/su/bin/su",
+                       "/data/local/xbin/su","/data/local/bin/su","/system/app/Superuser.apk",
+                       "/magisk","/sbin/.magisk","/data/adb/magisk","/data/local/tmp/frida-server"];
+        if (blocked.some(b => path.indexOf(b) !== -1)) {
+            console.log("[Root] File.exists blocked: " + path);
+            return false;
+        }
+        return this.exists();
+    };
+
+    // 2. Runtime.exec
+    var Runtime = Java.use("java.lang.Runtime");
+    var IOException = Java.use("java.io.IOException");
+    Runtime.exec.overload("java.lang.String").implementation = function(cmd) {
+        if (cmd && (cmd.indexOf("su") !== -1 || cmd.indexOf("magisk") !== -1 || cmd.indexOf("frida") !== -1)) {
+            console.log("[Root] Runtime.exec blocked: " + cmd);
+            throw IOException.$new("Command not found");
+        }
+        return this.exec(cmd);
+    };
+
+    // 3. SystemProperties
+    try {
+        var SystemProperties = Java.use("android.os.SystemProperties");
+        SystemProperties.get.overload("java.lang.String").implementation = function(key) {
+            if (key === "ro.debuggable") return "0";
+            if (key === "ro.secure") return "1";
+            if (key === "ro.build.tags") return "release-keys";
+            return this.get(key);
+        };
+    } catch(e) {}
+
+    // 4. Build.TAGS
+    var Build = Java.use("android.os.Build");
+    Build.TAGS.value = "release-keys";
+
+    // 5. Debug
+    var Debug = Java.use("android.os.Debug");
+    Debug.isDebuggerConnected.implementation = function() { return false; };
+});
 
 // === Crypto ===
 var C=Java.use('javax.crypto.Cipher')
@@ -437,6 +532,29 @@ KernelSU-Next / Magisk Alpha + Zygisk Next + Shamiko + TrickyStore + PlayIntegri
 # Settings → Zygisk ON → Configure DenyList → check app → reboot
 ```
 
+### Recommended setup for STRONG_INTEGRITY (authorized testing only)
+
+1. **Root solution**: KernelSU-Next or Magisk Alpha with Zygisk Next.
+2. **Hide root from target app**:
+   - Magisk: Settings → Zygisk ON → Configure DenyList → check target app → reboot.
+   - KernelSU-Next: use `SUSFS` or `SUSu` modules for app-specific hiding.
+3. **Hide modules**: Install **Shamiko** (white-list mode) so Zygisk is not exposed to the target app.
+4. **Spoof device attestation**: Install **TrickyStore** + a valid **keybox.xml** to pass MEETS_STRONG_INTEGRITY on supported devices.
+5. **Play Integrity bypass**: Use **PlayIntegrityFork** (PIF) or **TrickyStore** to return genuine-looking attestation responses.
+6. **Hide apps**: Use **HMA-OSS** (Hide My Applist) to hide root/magisk apps from the target app's package enumeration.
+
+### Quick checks
+
+```bash
+# Verify Play Integrity verdict locally (if the app exposes it)
+adb shell dumpsys activity provider com.google.android.gms.chimera.container.GmsModuleProvider | grep -i integrity
+
+# Check which apps are in Magisk DenyList
+adb shell su -c "cat /data/adb/magisk.db" | strings | grep -i denylist
+```
+
+**Warning:** Bypassing Play Integrity on apps you do not own may violate the Google Play Terms of Service and local laws. Only use these techniques on your own apps or with explicit authorization.
+
 ## Learning References
 
 - **☆ [Maddie Stone's Android RE 101](https://www.ragingrock.com/AndroidAppRE/)** — Full course with exercises (jadx, Ghidra, practice APKs)
@@ -448,16 +566,16 @@ KernelSU-Next / Magisk Alpha + Zygisk Next + Shamiko + TrickyStore + PlayIntegri
 
 | Phase | Primary | Alternatives |
 |---|---|---|
-| Triage | jadx, apktool, aapt | unzip, strings |
-| Java | jadx-gui, grep | MobSF, AndroGuard |
-| Dynamic | Frida, Objection | Medusa, Auto-Frida |
-| Network | mitmdump, tcpdump | Burp, HTTP Toolkit, Wireshark |
-| Native | Ghidra, radare2 | IDA Pro, Il2CppDumper |
+| Triage | jadx 1.5.1, apktool 2.7.0, aapt | unzip, strings, aapt2 |
+| Java | jadx-gui, grep, Vineflower | MobSF, AndroGuard |
+| Dynamic | Frida 17.15.3, Objection 1.12.5 | Medusa, Auto-Frida |
+| Network | HTTP Toolkit, mitmdump 12.x, tcpdump | Burp, Wireshark |
+| Native | Ghidra 12.x, radare2 6.1.9 | IDA Pro, Il2CppDumper |
 | Flutter | reFlutter, iptables | kill_flutter (dynamic offset) |
-| Root | Magisk, KernelSU | TrickyStore, Shamiko |
+| Root | Magisk, KernelSU, KernelSU-Next | TrickyStore, Shamiko, HMA-OSS |
 | Stealth | fridare, phantom-frida | renef (memfd, no ptrace) |
 
-## Top 14 Errors
+## Top 18 Errors
 
 | Error | Fix |
 |---|---|
@@ -470,12 +588,15 @@ KernelSU-Next / Magisk Alpha + Zygisk Next + Shamiko + TrickyStore + PlayIntegri
 | Read-only filesystem | `mount -o rw,remount magisk` |
 | Frida version mismatch | Same client/server version |
 | Proxy breaks miniapps | tcpdump without proxy |
-| STRONG_INTEGRITY fail | TrickyStore + keybox |
+| STRONG_INTEGRITY fail | TrickyStore + valid keybox + hide root |
 | Multiple Frida sessions | `kill $(pgrep -f 'frida.*<PID>')` before re-attaching |
-| Ionic/WebView app not capturing with proxy | Use iptables DNAT, not system proxy |
-| Chrome Custom Tab rejects cert | Doesn't use Java TrustManager. Disable DNAT, authenticate, re-enable |
+| Ionic/WebView app not capturing with proxy | Use native-connect-hook.js, not system proxy |
+| Chrome Custom Tab rejects cert | Use native-connect-hook.js + cert unpinning |
 | Ionic WebView crashes with Frida spawn | Use `attach` instead of `-f` spawn |
 | mitmdump dies when closing shell | Use `setsid` + `&` or `tail -f /dev/zero \| frida` |
+| Split APK missing native libs | Extract all splits (`adb shell pm path com.app`) |
+| Play Integrity token rejected | Cannot forge; hide root or control server |
+| Android 16 verifier blocks install | Patch verifier or use ADB with package_verifier_enable=0 |
 
 ## APK Signing (v1/v2/v3/v4)
 
@@ -914,18 +1035,45 @@ Reemplaza SafetyNet. Devuelve tokens JWT firmados por Google.
 
 ```bash
 # Buscar uso de Play Integrity
-rg -n 'PlayIntegrityApi\|IntegrityTokenRequest\|IntegrityTokenResponse' dex*_out/
+rg -n 'PlayIntegrityApi\|IntegrityTokenRequest\|IntegrityTokenResponse\|IntegrityManager' dex*_out/
 ```
 
-**Tipos de verificación:**
+**Tipos de verificación (2026):**
 - **App Integrity**: ¿La app está modificada? (hash del certificado de firma)
-- **Device Integrity**: ¿El dispositivo es genuine? (MEETS_DEVICE_INTEGRITY, MEETS_STRONG_INTEGRITY)
+- **Device Integrity**: ¿El dispositivo es genuine? (MEETS_DEVICE_INTEGRITY, MEETS_STRONG_INTEGRITY, MEETS_VIRTUAL_INTEGRITY)
 - **Account Details**: ¿La cuenta de Google está vinculada? (appLicense)
 
 **Análisis en laboratorio (autorizado):**
 - Hook `IntegrityTokenResponse` con Frida para inspeccionar tokens.
 - Análisis de respuesta server-side (el token está firmado por Google, no se puede falsificar).
 - Bypass de Play Integrity en producción viola ToS de Google Play.
+
+### Play Integrity API 2026 — Current State
+
+As of 2026, Play Integrity API responses are cryptographically signed by Google and cannot be forged client-side. The only reliable ways to influence the verdict are:
+
+1. **Hide root/modifications** so the device passes `MEETS_DEVICE_INTEGRITY` / `MEETS_STRONG_INTEGRITY`.
+2. **Use a valid keybox** with TrickyStore to pass hardware-backed attestation on devices that support it.
+3. **Server-side manipulation** (if you control the backend): accept weaker verdicts or skip attestation.
+
+**What does NOT work:**
+- Patching Google Play Services to return fake verdicts (signature verification fails server-side).
+- Replaying old tokens (nonces and timestamps are validated).
+- Static modification of the APK's Play Integrity call site (the token is still signed by Google).
+
+**Client-side inspection with Frida:**
+```javascript
+Java.perform(function() {
+    var IntegrityTokenResponse = Java.use("com.google.android.gms.tasks.zzw");
+    // Class name may vary; search for IntegrityTokenResponse in jadx
+    Java.choose("com.google.android.play.core.integrity.IntegrityTokenResponse", {
+        onMatch: function(instance) {
+            console.log("[PI] Token: " + instance.token().value);
+        },
+        onComplete: function() {}
+    });
+});
+```
 
 ### Root Detection Bypass (Frida)
 
@@ -1284,6 +1432,10 @@ Referencia completa de herramientas en `reports/android-re-toolbox.md` (16 secci
 
 ## Skills relacionados
 
+> **Workflow recomendado:** usar `android-reverse-engineering` para triaje y análisis, luego `apk-modding` para implementar parches persistentes en smali/nativo.
+
+- **`hacktricks-reference`** — Indice completo de herramientas (15+), checklist 2025-2026, tecnicas avanzadas (AIDL/Binder, App Links, dual-signing, LSPosed SMS, Unity RCE), y cursos de HackTricks Wiki.
+- **`frida-expert`** — Cookbook completo de Frida para Android: SSL pinning (14 librerias), root bypass (5 vectores), anti-Frida, crypto intercept, OkHttp3 interceptor, native connect hook, Flutter BoringSSL, CModule, memory scanning. Usar como referencia principal para instrumentacion dinamica.
 - **`apk-modding`** — Playbook operativo para modificar, parchear y hackear APKs (smali patching, signature killers, PairipCore bypass, Frida Gadget, Unity/IL2CPP). Usar cuando el objetivo sea modificar el comportamiento de la app, no solo analizarla.
 - **`flutter-reverse-engineering`** — RE profundo de Flutter/Dart (libapp.so, Dart VM internals, blutter, reFlutter, BoringSSL hooking, theme/color modification). Usar cuando el APK sea Flutter y se necesite análisis profundo más allá del triaje.
 - **`ghidra-pyghidra`** — Ghidra + pyghidra como herramienta (análisis headless, scripting Python con API de Ghidra, decompilación automatizada). Usar para scripting pyghidra y análisis headless automatizado.
@@ -1294,4 +1446,5 @@ Referencia completa de herramientas en `reports/android-re-toolbox.md` (16 secci
 
 ## Changelog
 
+- 2026-07-19 (v3): Actualizacion 2026: prerrequisitos con versiones de herramientas, captura de trafico QUIC/HTTP3 y mTLS, bypass de client certificate pinning, root hiding moderno (KernelSU-Next, Zygisk Next, TrickyStore, PIF), estado actual de Play Integrity API 2026, cookbook Frida mejorado con bypass de root, tabla de herramientas actualizada, Top 18 errores, referencias cruzadas a `apk-modding`, `frida-expert` y `hacktricks-reference`.
 - 2026-07-18 (v2): Ampliación con Flutter/Dart RE (referencia cruzada a skill dedicado), Kotlin deep dive, desofuscación, criptoanálisis, PairipCore/Dex2C, Play Integrity/SafetyNet, anti-debugging extendido, OWASP MASTG/MASVS, MobSF automation, Ghidra ARM64 workflow (referencia cruzada a skill dedicado + pyghidra), Frida advanced (CModule, memory scan, DexClassLoader, anti-suicide), toolbox reference, referencias cruzadas a skills relacionados.
