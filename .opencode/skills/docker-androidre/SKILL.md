@@ -1,12 +1,12 @@
 ---
 name: docker-androidre
 description: >
-  Pipeline completo de Android RE usando el contenedor Docker cryptax/android-re (apkid, jadx, apktool, apkleaks, radare2, uber-apk-signer, baksmali, droidlysis, frida-server). Use para triaje automatizado, decompilacion, busqueda de secrets, y analisis nativo sin instalar herramientas en el host. Use ONLY when working with APK files and the android-retools container is available.
+  Complete Android RE pipeline using the Docker container cryptax/android-re (apkid, jadx, apktool, apkleaks, radare2, uber-apk-signer, baksmali, droidlysis, frida-server). Use for automated triage, decompilation, secret hunting, and native analysis without installing tools on the host. Use ONLY when working with APK files and the android-retools container is available.
 ---
 
 # Docker Android RE Pipeline
 
-Contenedor `cryptax/android-re` con todas las herramientas de RE preinstaladas.
+Container `cryptax/android-re` with all RE tools preinstalled.
 
 ## Setup
 
@@ -18,13 +18,13 @@ docker run -d --name android-retools \
   cryptax/android-re:2024.02
 ```
 
-**Acceso:**
+**Access:**
 ```bash
 ssh -p 6022 -X root@127.0.0.1   # SSH + X11 (pass: mypass)
-vncviewer 127.0.0.1::6900       # VNC escritorio grafico
+vncviewer 127.0.0.1::6900       # VNC graphical desktop
 ```
 
-**Copiar archivos:**
+**Copy files:**
 ```bash
 docker cp app.apk android-retools:/workshop/app.apk       # host → container
 docker cp android-retools:/tmp/jadx-out ./jadx-out        # container → host
@@ -32,80 +32,80 @@ docker cp android-retools:/tmp/jadx-out ./jadx-out        # container → host
 
 ---
 
-## Pipeline completo
+## Complete pipeline
 
 ```bash
 APK=/workshop/app.apk
 
-# 1. Identificar protecciones
+# 1. Identify protections
 apkid $APK
 # Output: anti-debug, anti-vm, compiler, packer, obfuscator
 
-# 2. Metadatos del APK
+# 2. APK metadata
 aapt dump badging $APK | head -20
-# Output: package, version, SDK, permissions, activities exportadas
+# Output: package, version, SDK, permissions, exported activities
 
-# 3. Buscar secrets
+# 3. Search for secrets
 apkleaks -f $APK
 # Output: API keys, Firebase URLs, passwords, tokens
 
-# 4. Decompilar Java
+# 4. Decompile Java
 jadx -d /tmp/jadx-out/ $APK
-find /tmp/jadx-out/ -name "*.java" | wc -l  # clases decompiladas
+find /tmp/jadx-out/ -name "*.java" | wc -l  # decompiled classes
 
-# 5. Decompilar Smali (para parcheo)
+# 5. Decompile Smali (for patching)
 apktool d $APK -o /tmp/smali-out/
 
-# 6. Analisis automatizado
+# 6. Automated analysis
 cd /opt/droidlysis && python3 droidlysis.py --input $APK --output /tmp/report/
 
 # 7. Strings
 strings $APK | grep -iE 'api|key|secret|token|password|http'
 
-# 8. Analisis nativo
+# 8. Native analysis
 unzip -p $APK lib/arm64-v8a/libnative.so > /tmp/libnative.so
-r2 -A /tmp/libnative.so -c 'afl~JNI' -q  # funciones JNI
+r2 -A /tmp/libnative.so -c 'afl~JNI' -q  # JNI functions
 
-# 9. Firmar APK modificado
+# 9. Sign modified APK
 uber-apk-signer -a $APK --allowResign -o /tmp/signed/
 ```
 
 ---
 
-## Herramientas dentro del container
+## Tools inside the container
 
-| Herramienta | Uso | Path |
+| Tool | Usage | Path |
 |---|---|---|
-| **apkid** | Detectar compilador/packer/obfuscador | `apkid` |
-| **jadx** | Decompilar DEX → Java | `/opt/jadx/bin/jadx` |
-| **apktool** | Decompilar/compilar recursos + smali | `/opt/apktool/apktool` |
+| **apkid** | Detect compiler/packer/obfuscator | `apkid` |
+| **jadx** | Decompile DEX → Java | `/opt/jadx/bin/jadx` |
+| **apktool** | Decompile/compile resources + smali | `/opt/apktool/apktool` |
 | **baksmali/smali** | DEX ↔ smali | `/opt/smali`, `/opt/baksmali` |
-| **apkleaks** | Buscar secrets en APK | `apkleaks` |
-| **radare2** | Analisis nativo (.so) | `/opt/radare2/bin/r2` |
-| **androguard** | Analisis Python de APK | `androguard` |
+| **apkleaks** | Search for secrets in APK | `apkleaks` |
+| **radare2** | Native analysis (.so) | `/opt/radare2/bin/r2` |
+| **androguard** | Python analysis of APK | `androguard` |
 | **dex2jar** | DEX → JAR | `/opt/dex-tools-v2.4/d2j-dex2jar.sh` |
-| **uber-apk-signer** | Firmar APK (v1+v2+v3+v4) | `/opt/uber-apk-signer.jar` |
-| **droidlysis** | Analisis automatizado | `/opt/droidlysis/droidlysis.py` |
+| **uber-apk-signer** | Sign APK (v1+v2+v3+v4) | `/opt/uber-apk-signer.jar` |
+| **droidlysis** | Automated analysis | `/opt/droidlysis/droidlysis.py` |
 | **jd-gui** | GUI Java decompiler | `/opt/jd-gui.jar` |
-| **frida-server** | Servidor Frida para dispositivo | `/opt/frida-server-android-arm` |
+| **frida-server** | Frida server for device | `/opt/frida-server-android-arm` |
 
 ---
 
-## Casos de uso tipicos
+## Typical use cases
 
-### Triaje rapido de un APK desconocido
+### Quick triage of an unknown APK
 ```bash
-docker cp misteriosa.apk android-retools:/workshop/app.apk
+docker cp mysterious.apk android-retools:/workshop/app.apk
 docker exec android-retools bash -c 'apkid /workshop/app.apk && aapt dump badging /workshop/app.apk | head -10 && apkleaks -f /workshop/app.apk'
 ```
 
-### Buscar que ofuscador usa
+### Find which obfuscator it uses
 ```bash
 docker exec android-retools bash -c 'apkid /workshop/app.apk | grep compiler'
 # Output: compiler : DexProtector, DexGuard, ProGuard/R8, etc.
 ```
 
-### Extraer todas las URLs y endpoints
+### Extract all URLs and endpoints
 ```bash
 docker exec android-retools bash -c '
   jadx -d /tmp/jadx-out/ /workshop/app.apk 2>/dev/null
@@ -113,25 +113,25 @@ docker exec android-retools bash -c '
 '
 ```
 
-### Encontrar claves hardcodeadas
+### Find hardcoded keys
 ```bash
 docker exec android-retools bash -c '
   apkleaks -f /workshop/app.apk 2>/dev/null | grep -E "API_Key|Password|Secret|Token"
 '
 ```
 
-### Decompilar + abrir en GUI (VNC)
+### Decompile + open in GUI (VNC)
 ```bash
-# Conectar por VNC: vncviewer 127.0.0.1::6900
-# En el escritorio grafico:
+# Connect via VNC: vncviewer 127.0.0.1::6900
+# On the graphical desktop:
 jadx-gui /workshop/app.apk
-# o
+# or
 java -jar /opt/jd-gui.jar /workshop/jadx-out/
 ```
 
 ---
 
-## Limpieza
+## Cleanup
 
 ```bash
 docker stop android-retools && docker rm android-retools
@@ -139,21 +139,21 @@ docker stop android-retools && docker rm android-retools
 
 ## Troubleshooting
 
-| Error | Solucion |
+| Error | Solution |
 |---|---|
-| `Permission denied` en /tmp/retools | Usar `docker cp` en vez de copia directa |
-| jadx errores de decompilacion | Normal en APKs con ofuscacion avanzada. Usar smali/radare2 |
-| droidlysis no encontrado | Ejecutar desde `/opt/droidlysis/` con Python |
-| Out of memory | Aumentar memoria Docker: `docker run -m 4g ...` |
+| `Permission denied` in /tmp/retools | Use `docker cp` instead of direct copy |
+| jadx decompilation errors | Normal in APKs with advanced obfuscation. Use smali/radare2 |
+| droidlysis not found | Run from `/opt/droidlysis/` with Python |
+| Out of memory | Increase Docker memory: `docker run -m 4g ...` |
 
 ---
 
-## Skills relacionados
+## Related skills
 
-- **`android-reverse-engineering`** — Metodologia RE, que buscar en cada capa
-- **`apk-modding`** — Parcheo smali y reempaquetado (usa apktool + uber-apk-signer del container)
-- **`frida-expert`** — Instrumentacion dinamica (complementa al container con Frida host)
+- **`android-reverse-engineering`** — RE methodology, what to look for at each layer
+- **`apk-modding`** — Smali patching and repackaging (uses apktool + uber-apk-signer from the container)
+- **`frida-expert`** — Dynamic instrumentation (complements the container with Frida host)
 
 ## Changelog
 
-- 2026-07-19 (v1): Creacion. Pipeline completo con cryptax/android-re:2024.02.
+- 2026-07-19 (v1): Created. Complete pipeline with cryptax/android-re:2024.02.

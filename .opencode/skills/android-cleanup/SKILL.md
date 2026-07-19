@@ -31,16 +31,16 @@ adb shell settings list global | grep -i proxy
 ## Quick Diagnostic Flow
 
 ```
-¿App sin internet pero ping funciona?
-  → settings list global | grep -i proxy  →  ¿global_http_proxy_host configurado?
-  → iptables -t nat -L -n                 →  ¿reglas DNAT/REDIRECT?
-  → mount | grep bind                     →  ¿bind mounts de CA activos?
-  → ls /data/local*/*command-line*        →  ¿flags de WebView inyectados?
-  → ps -A | grep frida                    →  ¿frida-server corriendo?
-  → ls /data/local/tmp/*gadget*            →  ¿Frida Gadget presente?
-  → ls /data/local/tmp/*frida*             →  ¿Frida server binarios?
-  → ls /data/adb/modules/                  →  ¿Módulos Magisk de bypass?
-  → getenforce                            →  ¿SELinux Permissive?
+App without internet but ping works?
+  → settings list global | grep -i proxy  →  global_http_proxy_host configured?
+  → iptables -t nat -L -n                 →  DNAT/REDIRECT rules?
+  → mount | grep bind                     →  Active CA bind mounts?
+  → ls /data/local*/*command-line*        →  WebView flags injected?
+  → ps -A | grep frida                    →  frida-server running?
+  → ls /data/local/tmp/*gadget*            →  Frida Gadget present?
+  → ls /data/local/tmp/*frida*             →  Frida server binaries?
+  → ls /data/adb/modules/                  →  Magisk bypass modules?
+  → getenforce                            →  SELinux Permissive?
 ```
 
 ## Cleanup Script (run in order)

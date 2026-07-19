@@ -6,40 +6,40 @@ description: >
 
 # Frida Expert Cookbook
 
-Cookbook consolidado de Frida para Android, con scripts verificados de [Frida CodeShare](https://codeshare.frida.re/browse) y [HTTP Toolkit Frida](https://github.com/httptoolkit/frida-interception-and-unpinning). Cada seccion incluye el script listo para copiar/pegar y su explicacion.
+Consolidated Frida cookbook for Android, with verified scripts from [Frida CodeShare](https://codeshare.frida.re/browse) and [HTTP Toolkit Frida](https://github.com/httptoolkit/frida-interception-and-unpinning). Each section includes the script ready to copy/paste and its explanation.
 
 ## Setup
 
 ```bash
-# Verificar instalacion
+# Verify installation
 frida --version  # 17.15.3+
-adb devices      # Debe mostrar el dispositivo
+adb devices      # Should show the device
 
-# Ejecutar script contra app
+# Run script against app
 frida -U -l script.js -f com.target.app
-frida -U -l script.js com.target.app  # attach (sin spawn)
+frida -U -l script.js com.target.app  # attach (no spawn)
 frida -U --codeshare akabe1/frida-multiple-unpinning -f com.target.app
 
-# Mantener vivo en background
+# Keep alive in background
 tail -f /dev/zero | frida -U -l script.js -f com.target.app
 ```
 
-**Regla de oro:** `Java.perform()` envuelve TODO el codigo Java. `setTimeout` solo funciona dentro de `Java.perform()`. NUNCA hagas `return undefined` en un hook Java — usa `return arguments[0]`, `return ArrayList.$new()`, o el tipo de retorno esperado.
+**Golden rule:** `Java.perform()` wraps ALL Java code. `setTimeout` only works inside `Java.perform()`. NEVER do `return undefined` in a Java hook — use `return arguments[0]`, `return ArrayList.$new()`, or the expected return type.
 
 ---
 
 ## 1. SSL/TLS Pinning Bypass Cookbook
 
-Cada app usa una libreria distinta para SSL pinning. Aqui estan los hooks clasificados por libreria. **Usa todos simultaneamente** con `frida -U -l all_bypass.js`.
+Each app uses a different library for SSL pinning. Here are the hooks classified by library. **Use all simultaneously** with `frida -U -l all_bypass.js`.
 
-### 1.1 TrustManagerImpl — Android 7+ (el mas comun)
+### 1.1 TrustManagerImpl — Android 7+ (most common)
 
 ```javascript
 Java.perform(function() {
     var TrustManagerImpl = Java.use('com.android.org.conscrypt.TrustManagerImpl');
     var ArrayList = Java.use("java.util.ArrayList");
 
-    // checkTrustedRecursive — bypass principal
+    // checkTrustedRecursive — main bypass
     TrustManagerImpl.checkTrustedRecursive.overloads.forEach(function(o) {
         o.implementation = function() {
             console.log('[+] TMI.checkTrustedRecursive bypassed');
@@ -47,7 +47,7 @@ Java.perform(function() {
         };
     });
 
-    // verifyChain — capa adicional
+    // verifyChain — additional layer
     TrustManagerImpl.verifyChain.overloads.forEach(function(o) {
         o.implementation = function(untrustedChain) {
             console.log('[+] TMI.verifyChain bypassed');
@@ -56,7 +56,7 @@ Java.perform(function() {
     });
 });
 
-// Para GMS (Google Mobile Services) — muchos Google apps usan su propio conscrypt
+// For GMS (Google Mobile Services) — many Google apps use their own conscrypt
 Java.perform(function() {
     try {
         var GMS_TMI = Java.use('com.google.android.gms.org.conscrypt.TrustManagerImpl');
@@ -110,7 +110,7 @@ Java.perform(function() {
 });
 ```
 
-### 1.3 SquareUp OkHttp v2 (obsoleto pero presente en apps legacy)
+### 1.3 SquareUp OkHttp v2 (deprecated but present in legacy apps)
 
 ```javascript
 Java.perform(function() {
@@ -123,7 +123,7 @@ Java.perform(function() {
 });
 ```
 
-### 1.4 Cronet / Chromium (Google apps modernas)
+### 1.4 Cronet / Chromium (modern Google apps)
 
 ```javascript
 Java.perform(function() {
@@ -250,7 +250,7 @@ Java.perform(function() {
 });
 ```
 
-### 1.10 Otros: Fabric, Netty, PhoneGap, Appcelerator
+### 1.10 Others: Fabric, Netty, PhoneGap, Appcelerator
 
 ```javascript
 Java.perform(function() {
@@ -273,10 +273,10 @@ Java.perform(function() {
 
 ## 2. Root Detection Bypass Cookbook
 
-Script completo que cubre 5 vectores de deteccion de root: archivos, comandos, paquetes, system properties, y Build.FINGERPRINT.
+Complete script covering 5 root detection vectors: files, commands, packages, system properties, and Build.FINGERPRINT.
 
 ```javascript
-// root_bypass_complete.js — Basado en HTTP Toolkit android-disable-root-detection.js
+// root_bypass_complete.js — Based on HTTP Toolkit android-disable-root-detection.js
 
 (function() {
     var loggedOnce = false;
@@ -418,7 +418,7 @@ Script completo que cubre 5 vectores de deteccion de root: archivos, comandos, p
 (function() {
     var libc = Process.findModuleByName("libc.so");
 
-    // 1. Hook strstr para filtrar "frida", "gum", "agent", "linjector" en /proc/self/maps
+    // 1. Hook strstr to filter "frida", "gum", "agent", "linjector" in /proc/self/maps
     var strstr = libc.findExportByName("strstr");
     if (strstr) {
         Interceptor.attach(strstr, {
@@ -431,7 +431,7 @@ Script completo que cubre 5 vectores de deteccion de root: archivos, comandos, p
         });
     }
 
-    // 2. Hook ptrace(PTRACE_TRACEME) — evita bloqueo de attach
+    // 2. Hook ptrace(PTRACE_TRACEME) — prevents attach blocking
     var ptrace = Process.findModuleByName(null).findExportByName
         ? Module.findExportByName(null, "ptrace")
         : null;
@@ -505,7 +505,7 @@ Java.perform(function() {
         return this.digest(input);
     };
 
-    // SecretKeySpec + IvParameterSpec (capturar claves)
+    // SecretKeySpec + IvParameterSpec (capture keys)
     var SKS = Java.use("javax.crypto.spec.SecretKeySpec");
     SKS.$init.overload("[B", "java.lang.String").implementation = function(key, algo) {
         console.log("[KEY] Algorithm: " + algo + " Key(" + key.length + "): " + bytesToHex(key));
@@ -523,7 +523,7 @@ Java.perform(function() {
 
 ## 5. Network Interception — OkHttp3 Interceptor
 
-Hookea toda request/response en OkHttp3 sin depender de proxy:
+Hooks every request/response in OkHttp3 without depending on a proxy:
 
 ```javascript
 // okhttp_interceptor.js
@@ -562,7 +562,7 @@ Java.perform(function() {
         }
     });
 
-    // Hook addInterceptor para inyectar nuestro interceptor
+    // Hook addInterceptor to inject our interceptor
     Builder.addInterceptor.overload('okhttp3.Interceptor').implementation = function(interceptor) {
         console.log("[OkHttp] Interceptor added");
         return this.addInterceptor(interceptor);
@@ -572,12 +572,12 @@ Java.perform(function() {
 
 ---
 
-## 6. Native Connect Hook — Redirigir todo el trafico como VPN
+## 6. Native Connect Hook — Redirect All Traffic Like a VPN
 
-Hookea `connect()` de libc para redirigir todos los sockets TCP a tu proxy. No requiere configurar proxy en el sistema. Basado en HTTP Toolkit `native-connect-hook.js`:
+Hooks libc's `connect()` to redirect all TCP sockets to your proxy. No system proxy configuration needed. Based on HTTP Toolkit `native-connect-hook.js`:
 
 ```javascript
-// native_connect_hook.js — Configurar PROXY_HOST y PROXY_PORT antes
+// native_connect_hook.js — Set PROXY_HOST and PROXY_PORT first
 var PROXY_HOST = "127.0.0.1";
 var PROXY_PORT = 8080;
 var PROXY_HOST_BYTES = PROXY_HOST.split('.').map(function(p) { return parseInt(p, 10); });
@@ -595,15 +595,15 @@ Interceptor.attach(connect, {
         var sockType = Socket.type(fd);
 
         if (sockType === 'tcp' || sockType === 'tcp6') {
-            if (port === PROXY_PORT) return; // ya es el proxy
+            if (port === PROXY_PORT) return; // already the proxy
 
             if (IGNORED_PORTS.indexOf(port) !== -1) return;
 
-            // Guardar destino original (opcional, para SOCKS5)
+            // Save original destination (optional, for SOCKS5)
             this.originalPort = port;
             this.originalAddr = addrPtr.add(4).readByteArray(sockType === 'tcp6' ? 16 : 4);
 
-            // Sobreescribir destino con el proxy
+            // Overwrite destination with proxy
             var portBytes = addrPtr.add(2);
             portBytes.writeU16(PROXY_PORT);
             addrPtr.add(4).writeByteArray(PROXY_HOST_BYTES);
@@ -620,10 +620,10 @@ console.log("== Native connect hook active ==");
 
 ## 7. Flutter / Dart — BoringSSL Bypass
 
-Flutter usa BoringSSL dentro de `libflutter.so`. No tiene simbolos exportados — hay que buscar patrones de bytes. Script oficial de HTTP Toolkit:
+Flutter uses BoringSSL inside `libflutter.so`. It has no exported symbols — byte patterns must be searched. Official HTTP Toolkit script:
 
 ```bash
-# Usar directamente desde HTTP Toolkit
+# Use directly from HTTP Toolkit
 frida -U \
   -l config.js \
   -l android/android-system-certificate-injection.js \
@@ -631,12 +631,12 @@ frida -U \
   -f com.flutter.app
 ```
 
-**Como funciona:** Escanea `libflutter.so` buscando las funciones:
-- `dart::bin::SSLCertContext::CertificateCallback` (patron ARM64: `ff c3 00 d1 fe 57 01 a9...`)
-- `X509_STORE_CTX_get_current_cert` (anclada a la anterior)
-- `bssl::x509_to_buffer` + `i2d_X509` (para comparar el certificado contra nuestro CA)
+**How it works:** Scans `libflutter.so` looking for the functions:
+- `dart::bin::SSLCertContext::CertificateCallback` (ARM64 pattern: `ff c3 00 d1 fe 57 01 a9...`)
+- `X509_STORE_CTX_get_current_cert` (anchored to the previous one)
+- `bssl::x509_to_buffer` + `i2d_X509` (to compare the certificate against our CA)
 
-Cuando el cert **no** pasa la validacion de BoringSSL, verifica si el DER del cert coincide con nuestro CA. Si coincide, fuerza `retval = 1` (aceptado).
+When the cert does **not** pass BoringSSL validation, it checks whether the cert DER matches our CA. If it matches, it forces `retval = 1` (accepted).
 
 ---
 
@@ -645,28 +645,28 @@ Cuando el cert **no** pasa la validacion de BoringSSL, verifica si el DER del ce
 ```javascript
 // memory_scan.js
 Java.perform(function() {
-    // Buscar string en memoria
+    // Search string in memory
     var results = Memory.scanSync(ptr("0x7000000000"), 0x10000000, "68 65 6c 6c 6f"); // "hello"
     results.forEach(function(r) {
         console.log("[Memory] Found at: " + r.address + " -> " + r.address.readCString());
     });
 
-    // Buscar patron con wildcards
+    // Search pattern with wildcards
     var pattern = "48 8b ?? ?? 48 85 ?? 74 ?? e8 ?? ?? ?? ??";
     var wildcardResults = Memory.scanSync(Module.findBaseAddress("libtarget.so"), 0x100000, pattern);
     console.log("[Pattern] Found " + wildcardResults.length + " matches");
 });
 
-// CModule: hook nativo en C puro (mas rapido y stealthy)
+// CModule: native hook in pure C (faster and stealthier)
 var cm = new CModule(`
 #include <gum/guminterceptor.h>
 void on_enter(GumInvocationContext *ic) {
-    // Acceder a argumentos nativos
+    // Access native arguments
     int fd = GPOINTER_TO_INT(gum_invocation_context_get_nth_argument(ic, 0));
     gum_invocation_context_get_nth_argument(ic, 1); // addr
 }
 void on_leave(GumInvocationContext *ic) {
-    // Modificar retorno
+    // Modify return value
     gum_invocation_context_replace_return_value(ic, gint_to_gpointer(0));
 }
 `);
@@ -694,7 +694,7 @@ Java.perform(function() {
         return this.loadClass(name);
     };
 
-    // Hook PathClassLoader tambien (mas comun en apps modernas)
+    // Hook PathClassLoader too (more common in modern apps)
     var PathClassLoader = Java.use("dalvik.system.PathClassLoader");
     PathClassLoader.$init.overload('java.lang.String', 'java.lang.ClassLoader').implementation = function(path, parent) {
         console.log("[PATH-LOAD] " + path);
@@ -726,16 +726,16 @@ Java.perform(function() {
 
 ---
 
-## 11. Objection (Comandos Esenciales)
+## 11. Objection (Essential Commands)
 
 ```bash
 objection -g com.app explore
 
 # SSL Pinning
-android sslpinning disable          # 5 capas automaticas
+android sslpinning disable          # 5 automatic layers
 
 # Root Detection
-android root disable                 # 7 checks automaticos
+android root disable                 # 7 automatic checks
 
 # Hooking
 android hooking list classes
@@ -758,7 +758,7 @@ android heap execute js --eval "send(JSON.stringify(this.value));"
 ## 12. FLAG_SECURE Bypass
 
 ```javascript
-// disable-flag-secure.js — permite screenshots/grabacion durante analisis
+// disable-flag-secure.js — allows screenshots/recording during analysis
 Java.perform(function () {
   var LayoutParams = Java.use("android.view.WindowManager$LayoutParams");
   var FLAG_SECURE = LayoutParams.FLAG_SECURE.value;
@@ -787,46 +787,46 @@ Java.perform(function () {
 
 ## Troubleshooting
 
-| Error | Solucion |
+| Error | Solution |
 |---|---|
-| `Java.perform()` never runs | Envolver TODO el codigo Java en `Java.perform(function() { ... })` |
-| `setTimeout is not defined` | Solo usar `setTimeout` dentro de `Java.perform()` |
-| Frida se cierra solo al hacer spawn | Usar `tail -f /dev/zero \| frida -U ...` |
-| `TypeError: cannot read property 'overload'` | El metodo no existe con esa firma. Hacer catch y listar overloads validos. |
-| Multiples sesiones de Frida | `frida-ps -U` y `kill $(pgrep frida)` en el dispositivo antes de re-attach |
-| `return undefined` en hook Java | Java no acepta `undefined`. Usar `return arguments[0]`, `ArrayList.$new()`, o el tipo esperado |
-| SSL pinning persiste | La app puede usar librerias no cubiertas. Probar con `--codeshare akabe1/frida-multiple-unpinning` |
-| `SIGABRT` en JNI | Probablemente `return undefined` en un hook. Siempre retornar un valor del tipo correcto. |
-| Dispositivo sin internet tras Frida | Usar skill `android-cleanup` para restaurar proxy/iptables/certs. |
+| `Java.perform()` never runs | Wrap ALL Java code in `Java.perform(function() { ... })` |
+| `setTimeout is not defined` | Only use `setTimeout` inside `Java.perform()` |
+| Frida closes by itself on spawn | Use `tail -f /dev/zero \| frida -U ...` |
+| `TypeError: cannot read property 'overload'` | The method doesn't exist with that signature. Catch and list valid overloads. |
+| Multiple Frida sessions | `frida-ps -U` and `kill $(pgrep frida)` on the device before re-attach |
+| `return undefined` in Java hook | Java doesn't accept `undefined`. Use `return arguments[0]`, `ArrayList.$new()`, or the expected type |
+| SSL pinning persists | The app may use uncovered libraries. Try `--codeshare akabe1/frida-multiple-unpinning` |
+| `SIGABRT` in JNI | Likely `return undefined` in a hook. Always return a value of the correct type. |
+| Device without internet after Frida | Use skill `android-cleanup` to restore proxy/iptables/certs. |
 
 ---
 
-## Referencias
+## References
 
 - **Frida CodeShare:** https://codeshare.frida.re/browse
 - **HTTP Toolkit Frida Scripts:** https://github.com/httptoolkit/frida-interception-and-unpinning
 - **Frida Docs:** https://frida.re/docs/android/
 - **Objection:** https://github.com/sensepost/objection
-- **Medusa (90+ modulos Frida):** https://github.com/Ch0pin/medusa
-- **Auto-Frida (automatizacion):** https://github.com/ommirkute/Auto-Frida
+- **Medusa (90+ Frida modules):** https://github.com/Ch0pin/medusa
+- **Auto-Frida (automation):** https://github.com/ommirkute/Auto-Frida
 - **phantom-frida (stealth server):** https://github.com/TheQmaks/phantom-frida
 - **clsdumper (DEX dump + anti-Frida):** https://github.com/TheQmaks/clsdumper
 - **frida-ui (web UI):** https://github.com/adityatelange/frida-ui
-- **frida-jdwp-loader (sin root):** https://github.com/frankheat/frida-jdwp-loader
-- **Frida-Labs (ejercicios):** https://github.com/DERE-ad2001/Frida-Labs
+- **frida-jdwp-loader (no root):** https://github.com/frankheat/frida-jdwp-loader
+- **Frida-Labs (exercises):** https://github.com/DERE-ad2001/Frida-Labs
 - **Awesome Frida:** https://github.com/dweinstein/awesome-frida
 
-### Skills relacionados
+### Related Skills
 
-- **`hacktricks-reference`** — Indice completo de herramientas, tecnicas y cursos de HackTricks Wiki para Android.
-- **`android-reverse-engineering`** — Triaje, analisis estatico, y contexto general de RE antes de instrumentar con Frida.
-- **`apk-modding`** — Parcheo persistente (smali/nativo) para bypass que no requieren Frida en runtime.
-- **`httptoolkit-android`** — HTTP Toolkit como alternativa grafica a Frida para captura de trafico.
-- **`android-cleanup`** — Limpieza post-Frida (proxy, iptables, certs, Frida Gadget).
-- **`flutter-reverse-engineering`** — Analisis profundo de Flutter/Dart; Frida para BoringSSL bypass.
+- **`hacktricks-reference`** — Complete index of tools, techniques, and courses from HackTricks Wiki for Android.
+- **`android-reverse-engineering`** — Triage, static analysis, and general RE context before instrumenting with Frida.
+- **`apk-modding`** — Persistent patching (smali/native) for bypasses that don't require Frida at runtime.
+- **`httptoolkit-android`** — HTTP Toolkit as a graphical alternative to Frida for traffic capture.
+- **`android-cleanup`** — Post-Frida cleanup (proxy, iptables, certs, Frida Gadget).
+- **`flutter-reverse-engineering`** — Deep Flutter/Dart analysis; Frida for BoringSSL bypass.
 
 ---
 
 ## Changelog
 
-- 2026-07-19 (v1): Creacion inicial. Consolidacion de scripts de Frida CodeShare (akabe1, dzonerzy, fadeevab, owen800q) y HTTP Toolkit (Tim Perry). SSL pinning (14 librerias), root bypass (5 vectores), anti-Frida, crypto intercept, OkHttp3 interceptor, native connect hook, Flutter BoringSSL, CModule, memory scanning, DexClassLoader, anti-suicide, Objection commands, troubleshooting.
+- 2026-07-19 (v1): Initial creation. Consolidation of Frida CodeShare scripts (akabe1, dzonerzy, fadeevab, owen800q) and HTTP Toolkit (Tim Perry). SSL pinning (14 libraries), root bypass (5 vectors), anti-Frida, crypto intercept, OkHttp3 interceptor, native connect hook, Flutter BoringSSL, CModule, memory scanning, DexClassLoader, anti-suicide, Objection commands, troubleshooting.
