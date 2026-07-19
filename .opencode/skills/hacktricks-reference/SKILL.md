@@ -14,7 +14,23 @@ Indice de recursos externos. Para tecnicas y scripts, consultar los skills espec
 - [jpelias/smartlife-reverse-engineering](https://github.com/jpelias/smartlife-reverse-engineering) — RE de Smart Life v7.9.0: SSL bypass, Frida, APIs
 - [jpelias/tuya-local-panel](https://github.com/jpelias/tuya-local-panel) — Panel local Tuya
 
-## Wikis y documentacion
+## Repos destacados (GitHub Topics)
+
+Del topic [android-reverse-engineering](https://github.com/topics/android-reverse-engineering) (44 repos):
+
+| Repo | ⭐ | Nota |
+|---|---|---|
+| [ax/apk.sh](https://github.com/ax/apk.sh) | 3.8k | Automatiza pull/decode/rebuild/patch APK + Frida + Objection + split APK |
+| [REAndroid/APKEditor](https://github.com/REAndroid/APKEditor) | 2.2k | Editor APK sin dependencia de aapt/aapt2, merge splits |
+| [LING71671/open-reverselab](https://github.com/LING71671/open-reverselab) | 852 | 197-article KB + MCP tools + CTF/APK/PE automation workflows |
+| [zinja-coder/jadx-mcp-server](https://github.com/zinja-coder/jadx-mcp-server) | 706 | MCP server para JADX-AI — RE asistida por IA |
+| [ImKKingshuk/LockKnife](https://github.com/ImKKingshuk/LockKnife) | 511 | TUI + CLI Android security tool con AI agent support |
+| [Evil0ctal/AndroidReverse101](https://github.com/Evil0ctal/AndroidReverse101) | 350 | Curso sistematico Android RE (CN) |
+| [Fausto-404/ai-mobile-reverse-skills](https://github.com/Fausto-404/ai-mobile-reverse-skills) | 118 | Skill 6-fases con JADX/Burp/IDA/Ghidra MCP |
+| [SyscallX-18113/Apkx-Hunter](https://github.com/SyscallX-18113/Apkx-Hunter) | 67 | Static analysis en C, 166 patrones OWASP MASVS, ML scoring |
+| [argus-sight/BinSight](https://github.com/argus-sight/BinSight) | 31 | Analisis .so via LLM+Capstone |
+| [surendrajat/ApkStudio](https://github.com/surendrajat/ApkStudio) | 29 | IDE cross-platform para RE Android |
+| [ax/DEXPatch](https://github.com/ax/DEXPatch) | 15 | Inyectar System.loadLibrary() quirurgicamente en DEX |
 
 - [OWASP MASTG v2.0.0 (Junio 2026)](https://mas.owasp.org/MASTG/) — Guia oficial OWASP: 80+ tecnicas documentadas (MASTG-TECH-0001 a 0174), tests por categoria MASVS, tools reference, best practices
 - [OWASP MASTG GitHub](https://github.com/OWASP/mastg) — `techniques/android/`, `tests/android/`, `tools/android/`, `Crackmes/`
