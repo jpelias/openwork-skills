@@ -34,6 +34,7 @@ If something is missing, install with the system package manager (apt, brew, pip
 ## Attack Pipeline
 
 ```
+STEP 0 → Buscar en GitHub: topics + keywords del objetivo
 TRIAGE  → jadx + apktool + unzip + aapt
 JAVA    → CertificatePinner, TrustManager, crypto, auth, OkHttp
 SMALI   → debug flags, root bypass, NSC mod
@@ -41,6 +42,23 @@ REBUILD → apktool b → zipalign → apksigner → adb install
 HOOK    → Frida Java + Native (.so)
 NATIVE  → Ghidra/IDA/radare2 → pattern scan → memory patch
 ```
+
+### STEP 0 — Buscar en GitHub antes de empezar
+
+Siempre, sin excepcion:
+```bash
+# Buscar herramientas existentes para el objetivo
+https://github.com/topics/android-reverse-engineering
+https://github.com/search?q=<app_name>+reverse+engineering
+https://github.com/search?q=<package_name>
+
+# Verificar si alguien ya hizo el trabajo
+https://github.com/topics/frida
+https://github.com/topics/apk-analysis
+https://github.com/topics/ssl-pinning-bypass
+```
+
+No reinventes la rueda. Si existe un repo con la solucion, fork, estudia, adapta.
 
 ## ⚠️ HOW TO CAPTURE TRAFFIC — READ FIRST ⚠️
 

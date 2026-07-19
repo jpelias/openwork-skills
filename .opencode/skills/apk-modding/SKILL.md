@@ -15,6 +15,8 @@ Playbook operativo para modificar APKs Android desde este workspace Linux. Todas
 
 ## Reglas de oro
 
+0. **Buscar en GitHub primero.** Antes de tocar un byte, buscar `github.com/topics/android-reverse-engineering` y `github.com/search?q=<app>`. Si alguien ya lo parcheo, fork y adapta. No reinventes.
+
 1. **Hackear el original, no el mod.** Si el APK original existe, parchearlo. Los mods añaden protecciones (DEX cifrado, multi-layer signature verification, anti-tamper nativo) órdenes de magnitud más difíciles de bypassar que las licencias simples del original.
 
 2. **Nunca borrar `META-INF/services/`.** Solo borrar firmas: `.SF`, `.RSA`, `.DSA`, `.EC`, `MANIFEST.MF`. Borrar `META-INF/services/` rompe Kotlin `ServiceLoader` → crash `Module with the Main dispatcher is missing`.
