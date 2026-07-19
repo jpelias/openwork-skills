@@ -13,9 +13,11 @@ description: >
 
 Playbook operativo para modificar APKs Android desde este workspace Linux. Todas las herramientas están instaladas y son nativas de Linux.
 
-## Reglas de oro
+## ⚠️ GOLDEN RULE — SIEMPRE, SIN EXCEPCION
 
-0. **Buscar en GitHub primero.** Antes de tocar un byte, buscar `github.com/topics/android-reverse-engineering` y `github.com/search?q=<app>`. Si alguien ya lo parcheo, fork y adapta. No reinventes.
+**Antes de tocar un solo byte, buscar en GitHub.** `github.com/topics/android-reverse-engineering`, `github.com/search?q=<app>`. Si alguien ya lo parcheo, fork y adapta. No reinventes la rueda. Nunca.
+
+## Reglas de oro
 
 1. **Hackear el original, no el mod.** Si el APK original existe, parchearlo. Los mods añaden protecciones (DEX cifrado, multi-layer signature verification, anti-tamper nativo) órdenes de magnitud más difíciles de bypassar que las licencias simples del original.
 
