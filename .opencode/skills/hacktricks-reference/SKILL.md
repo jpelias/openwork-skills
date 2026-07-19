@@ -357,11 +357,53 @@ frida --codeshare L0WK3Y-IAAN/crypto-detection -f com.app
 ### tinyhack — Reversing Flutter app by recompiling Flutter Engine (2021)
 - https://tinyhack.com/2021/03/07/reversing-a-flutter-app-by-recompiling-flutter-engine/
 
+### SensePost — Intercepting HTTPS in Flutter with Frida (2025)
+- https://sensepost.com/blog/2025/intercepting-https-communication-in-flutter-going-full-hardcore-mode-with-frida/
+- SSL pinning en Flutter, BoringSSL hooking, Frida avanzado
+
+### OWASP MASTG-TECH-0156 — Reverse Engineering Flutter Applications
+- https://mas.owasp.org/MASTG/techniques/android/MASTG-TECH-0156/
+- Arquitectura Flutter, Dart VM, Snapshots AOT, Blutter
+
+### Blutter
+- https://github.com/worawit/blutter — Flutter AOT, Dart VM reconstruction, libapp.so
+
 ### JEB — Dart AOT snapshot helper plugin
-- https://www.pnfsoftware.com/blog/dart-aot-snapshot-helper-plugin-to-better-analyze-flutter-based-apps/
+- https://www.pnfsoftware.com/blog/2022/06/
 
 ### Darter — Flutter parser for Dart 2.5
 - https://github.com/mildsunrise/darter
+
+---
+
+## Laboratorios Vulnerables
+
+| App | Enlace | Practica |
+|---|---|---|
+| **DIVA** | https://github.com/payatu/Damn-Vulnerable-Android-App | Root detection, SQL injection, insecure storage, IPC, exported components |
+| **InsecureShop** | https://github.com/hax0rgb/InsecureShop | Deep links, WebViews, authentication, Android security |
+| **InsecureBankv2** | https://github.com/dineshshetty/Android-InsecureBankv2 | Android pentesting, mobile banking, auth, insecure comms |
+| **OWASP UnCrackable** | https://github.com/OWASP/owasp-mstg/tree/master/Crackmes | L1 (Java), L2 (native), L3 (native+obfuscation), L4 (Flutter), L5 (Kotlin) |
+| **Frida-Labs** | https://github.com/DERE-ad2001/Frida-Labs | Ejercicios practicos de Frida |
+| **Frida Android Examples** | https://github.com/11x256/frida-android-examples | Ejemplos de hooking Frida |
+
+## Ruta de Aprendizaje Recomendada
+
+```
+DIVA → InsecureShop → InsecureBankv2 → OWASP UnCrackable L1-L3
+  → Frida Basics (braincoke.fr, Frida-Labs)
+  → Ghidra Basics → JNI Analysis → ARM64 Reversing
+  → Flutter Internals (rloura, OWASP MASTG-TECH-0156)
+  → Blutter → Flutter AOT Reversing
+```
+
+## Blogs y Comunidades
+
+- **braincoke.fr** — Android RE for Beginners: Frida (https://braincoke.fr/blog/2021/03/android-reverse-engineering-for-beginners-frida/)
+- **HTTP Toolkit Blog** — Android Reverse Engineering (https://httptoolkit.com/blog/android-reverse-engineering/)
+- **Reddit r/ReverseEngineering** — Ghidra, IDA, Frida, JNI, ARM64 (https://www.reddit.com/r/ReverseEngineering/)
+- **Reddit r/Malware** — Android malware, APK analysis (https://www.reddit.com/r/MalwareAnalysis/)
+- **Awesome Android RE** — Coleccion de herramientas, libros, cursos, blogs (https://github.com/user1342/Awesome-Android-Reverse-Engineering)
 
 ---
 
