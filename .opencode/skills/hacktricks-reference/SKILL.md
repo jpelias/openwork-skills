@@ -254,6 +254,71 @@ Java.perform(function () {
 
 ---
 
+## bi0s Pentest Blog — CTF Writeups (Junio 2026)
+
+Recopilacion de tecnicas extraidas de los writeups de [pentest.bi0s.in/blog](https://pentest.bi0s.in/blog/) por Narain Krishna.
+
+### Rude Frida (Pwnsec CTF) — Native bypass + phantom-frida
+- `libRudeFrida.so` con `is_root_simple()` (acceso a binarios root) y `FridaCheck()` (puertos default frida-server)
+- Bypass root: script Frida CodeShare de @fdciabdul
+- Bypass anti-Frida: **phantom-frida** (90+ patches)
+- Llamar `get_flag(int, int)` via NativeFunction con parametros que suman 0x539 (1337)
+```javascript
+const f = Process.getModuleByName('libRudefrida.so').getExportByName('_Z8get_flagii');
+const myNative = new NativeFunction(f, ['void'], ['int', 'int']);
+myNative(1330, 7);
+```
+
+### Freaky Frida (Pwnsec CTF) — Stub .so replacement + strcmp hook
+- `libnative-lib.so` altamente ofuscado con strings encriptados que crashea la app
+- **Tecnica clave**: reemplazar .so malicioso con stub:
+```c
+__attribute__((visibility("default")))
+int JNI_OnLoad(void *vm, void *reserved) { return 0x00010006; }
+```
+```bash
+gcc -shared -fPIC -nostdlib -o libnative-lib.so stub.c
+apktool d FreakyFrida.apk
+cp libnative-lib.so FreakyFrida/lib/x86_64/libnative-lib.so
+apktool b FreakyFrida
+java -jar uber-apk-signer.jar -a FreakyFrida.apk
+```
+- Luego hook `strcmp` + `Java.choose` para llamar `CheckAsYouLike(str)` via instancia existente
+
+### Cute Frida (Pwnsec CTF) — Deobfuscator hooking
+- `Deobfuscator$app$Release.getString(long)` — hookear con 5 valores long especificos
+```javascript
+var f = Java.use("com.joom.paranoid.Deobfuscator$app$Release");
+var longs = [-548601664941, -3140818349, -28910622125, -308083496365, -338148267437];
+for (var i = 0; i < longs.length; i++) console.log(f.getString(longs[i]));
+```
+
+### Path Finder (Payatu CTF) — WebView XSS + Deep Link
+- WebView con `AndroidFunction.showFlag()` expuesta via `@JavascriptInterface`
+- Bypass de validacion `urlToLoad.contains("payatu.com")` usando `//payatu.com` como comentario JS
+- Payload ADB: `am start -a android.intent.action.VIEW -d "ctf://payatu/web?url=javascript:AndroidFunction.showFlag()//payatu.com"`
+
+### Shadow Vault (Pearl CTF) — SSL bypass + API tampering
+- Hardcoded credentials: `Player118` / `Gv8@kz#1qP$Xy!tM`
+- SSL pinning bypass con `android-unpinner` (mitmproxy)
+- Retrofit POST a `pearlctf.pythonanywhere.com` con lat/long
+- Burp request tampering: cambiar `latitude=100&longitude=200`
+
+### DROID (Squirrel CTF) — Kotlin XOR key recovery
+- `key[] ^ expected[] = flag` (XOR simetrico)
+- `ComposerKt.reuseKey = 207` hardcoded
+
+### Gate Keeper (Payatu CTF) — Native strcmp
+- `libnative-lib.so` con `submitKey()` que llama `strcmp(input, "undefined")`
+- Flag retornada si coinciden
+
+### Firmware (Cyberchaze CTF) — Hidden ELF in resources
+- `firmware.bin` en `res/raw/` → 7zip con password `nullc0n_2025` de `strings.xml`
+- Extrae ELF x86-64 ejecutable → `strings firmware.bin | grep flag`
+
+---
+
 ## Changelog
+
 
 - 2026-07-19 (v1): Creacion inicial. Consolidacion de herramientas (15+), checklist 2025-2026, tecnicas avanzadas (AIDL/Binder, App Links hijacking, dual-signing, DocumentProvider, LSPosed SMS, Unity RCE, weak receiver brute-force), cursos y laboratorios. Extraido de HackTricks Wiki.
