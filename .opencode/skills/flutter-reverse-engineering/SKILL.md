@@ -1,6 +1,13 @@
 ---
 name: flutter-reverse-engineering
-description: Comprehensive Flutter/Dart reverse engineering: APK splitting and merging, static analysis of libapp.so (Blutter, unflutter, flutterdec, r2flutter), dynamic analysis (Frida Gadget embedding, SSL pinning bypass via BoringSSL hooking), Dart VM internals (Object Pool, compressed pointers, QK Color objects, AOT snapshot format), traffic interception (reFlutter, iptables, socket redirection), and theme/color modification. Covers Android ARM64 exclusively. Use for authorized security testing, research, or modifying your own apps.
+description: >
+  Comprehensive Flutter/Dart reverse engineering: APK splitting and merging, static analysis
+  of libapp.so (Blutter, unflutter, flutterdec, r2flutter), dynamic analysis (Frida Gadget
+  embedding, SSL pinning bypass via BoringSSL hooking), Dart VM internals (Object Pool,
+  compressed pointers, QK Color objects, AOT snapshot format), traffic interception
+  (reFlutter, iptables, socket redirection), and theme/color modification. Covers Android
+  ARM64 exclusively. Use for authorized security testing, research, or modifying your own
+  apps.
 ---
 
 # Flutter Reverse Engineering — Complete Guide
