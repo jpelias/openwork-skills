@@ -44,6 +44,20 @@ Hard rule: never copy private memory into repo files. Store only redacted summar
 - Prefer clear, practical steps over abstract explanations.
 - Never say "Tienes razón." to the user.
 
+## ⛔ PROHIBITED ACTIONS — NEVER DO THESE
+
+**Under no circumstances may the agent:**
+
+1. **Create API keys** for Google (Maps, Places, Firebase), AWS, Azure, Mapbox, or any cloud service.
+2. **Navigate the browser** to `console.cloud.google.com`, `console.firebase.google.com`, `console.aws.amazon.com`, or any cloud administration console.
+3. **Register, sign up, or enable APIs** on any cloud platform.
+4. **Fill out web forms** in cloud consoles (Angular Material, React, etc.) — the agent cannot complete them reliably.
+5. **Attempt to resolve CAPTCHAs** or any human-verification challenge.
+
+**Why:** The agent lacks payment methods, cannot complete complex web forms, the user does not want this, and it wastes time.
+
+**Instead:** If an app needs API keys that are tied to the original signature, use the original APK + Frida for runtime patching. Consult `.opencode/skills/apk-modding/google-apis.md` for the complete decision tree.
+
 <!-- OPENWORK_ARTIFACTS_START -->
 ## OpenWork Artifacts
 
@@ -92,17 +106,26 @@ OpenWork can preview, edit, and download standard artifacts when you create or u
 - **apkInspector (Python):** v1.3.6
 
 ### Frida (Instrumentación)
+
+**VERSION: 17.15.3** — si se actualiza tools, actualizar también los server y este número.
+
 | Herramienta | Ruta | Versión |
 |---|---|---|
 | **frida** | `/home/usuario/.local/bin/frida` | 17.15.3 |
-| **frida-trace** | `/home/usuario/.local/bin/frida-trace` | — |
-| **frida-ps** | `/home/usuario/.local/bin/frida-ps` | — |
-| **frida-ls-devices** | `/home/usuario/.local/bin/frida-ls-devices` | — |
-| **frida-kill** | `/home/usuario/.local/bin/frida-kill` | — |
+| **frida-ps** | `/home/usuario/.local/bin/frida-ps` | 17.15.3 |
+| **frida-trace** | `/home/usuario/.local/bin/frida-trace` | 17.15.3 |
 
-- **Frida server:** `/home/usuario/frida-server-17.15.3-android-x86_64`
-- **Frida servers (HTTP Toolkit):** `~/.config/httptoolkit/frida-server-android-*.bin`
-- **Frida extras (rootAVD):** `/home/usuario/rootAVD/frida-server-17.15.3-android-x86_64`
+**Server binaries:**
+- `/home/usuario/frida-server-17.15.3-android-x86_64` (emulador x86_64)
+- `/home/usuario/frida-server-17.15.3-android-arm64` (dispositivo real arm64)
+
+**Deploy (misma versión siempre):**
+```bash
+adb push /home/usuario/frida-server-17.15.3-android-arm64 /data/local/tmp/frida-server
+adb shell "chmod 755 /data/local/tmp/frida-server"
+adb shell "/data/local/tmp/frida-server &"
+/home/usuario/.local/bin/frida-ps -U
+```
 
 ### Objection (Runtime Mobile Exploration)
 - Ruta: `/home/usuario/.local/bin/objection` (v1.12.5)
@@ -171,3 +194,4 @@ OpenWork can preview, edit, and download standard artifacts when you create or u
   source ~/.bashrc
   git remote set-url origin https://jpelias:$GITHUB_TOKEN@github.com/jpelias/repo.git
   ```
+- **Todos los repos de jpelias son privados.** Para buscarlos usar siempre la API autenticada con token (`curl -H "Authorization: token $GITHUB_TOKEN" https://api.github.com/user/repos`), nunca búsquedas públicas. El endpoint público `/users/jpelias/repos` no los lista.

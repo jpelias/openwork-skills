@@ -1,18 +1,36 @@
 ---
 name: android-reverse-engineering
 description: >
-  Reverse-engineer Android APKs, XAPK, JAR, and AAR files across Java, Kotlin, and Flutter.
-  Static decompilation (jadx, Fernflower/Vineflower, apktool, baksmali), API extraction and
-  call-flow documentation, dynamic analysis (Frida, Objection, mitmproxy), SSL pinning bypass
-  (OkHttp, Ktor, Cronet, Flutter, WebView), root detection bypass, anti-debugging/anti-tamper
-  bypass, cryptoanalysis, deobfuscation (ProGuard/R8/DexGuard/StringFog), native ARM64 analysis
-  (Ghidra, radare2), PairipCore/Dex2C detection, Play Integrity/SafetyNet analysis, and OWASP
-  MASTG/MASVS compliance testing. Use for authorized security testing (own apps, bug bounty
-  with defined scope, or apps with explicit permission from the owner) — not against third-party
-  services without authorization.
+  Reverse-engineer Android APKs, AAB/App Bundles, XAPK, JAR, and AAR files across Java, Kotlin,
+  Flutter, React Native/Hermes, and Unity/IL2CPP. Static decompilation (jadx, Fernflower/Vineflower,
+  apktool, baksmali, Il2CppDumper, hermes-dec), API extraction and call-flow documentation,
+  gRPC/Protobuf black-box decoding, dynamic analysis (Frida, Objection, mitmproxy), SSL pinning
+  bypass (OkHttp, Ktor, Cronet, Flutter, WebView), root detection bypass, anti-debugging/anti-tamper
+  bypass, Frida detection/evasion, deep link/App Link hijacking, AIDL/Binder exploitation,
+  ContentProvider path traversal, cryptoanalysis, deobfuscation (ProGuard/R8/DexGuard/StringFog),
+  native ARM64 analysis (Ghidra, radare2), PairipCore/Dex2C detection, Play Integrity/SafetyNet
+  analysis, and OWASP MASTG/MASVS compliance testing. Use for authorized security testing (own
+  apps, bug bounty with defined scope, or apps with explicit permission from the owner) — not
+  against third-party services without authorization.
 ---
 
 # Android RE Expert
+
+## ⛔ REGLA ABSOLUTA: Nunca crear APIs ni registrarse en servicios cloud
+
+El agente tiene **PROHIBIDO TERMINANTEMENTE**:
+
+1. Crear API keys de Google (Maps, Places, Firebase, etc.)
+2. Navegar a `console.cloud.google.com`, `console.firebase.google.com`, o similares
+3. Registrarse, crear cuentas, o habilitar APIs en cualquier plataforma cloud
+4. Usar el navegador para formularios de consolas de administracion (Google Cloud, AWS, Azure, Mapbox...)
+5. Intentar resolver CAPTCHAs o formularios web complejos
+
+**Motivo:** El agente no puede completar formularios Angular/React, no tiene metodo de pago, el usuario no lo quiere, y es una perdida de tiempo.
+
+**Alternativa correcta:** Si una app necesita API key de Google Maps y la firma original esta disponible, usar la APK sin modificar + Frida para parchear el resto en runtime. Si no hay firma original, buscar keys unrestricted en APKs ya moddeadas (resources.arsc). Consultar `.opencode/skills/apk-modding/google-apis.md` para el flujo completo.
+
+---
 
 6-phase attack pipeline for pentesting and reverse engineering Android APKs.
 
@@ -31,9 +49,79 @@ apktool --version
 
 If something is missing, install with the system package manager (apt, brew, pipx, etc.) or consult the official documentation for each tool.
 
+### Environment Setup (from zero)
+
+```bash
+# Debian/Ubuntu base
+sudo apt install -y openjdk-17-jdk aapt apksigner zipalign adb fastboot \
+  python3-pip radare2 binutils-aarch64-linux-gnu
+
+# Python tooling (isolated)
+pipx install frida-tools objection mitmproxy
+
+# jadx
+wget -q https://github.com/skylot/jadx/releases/download/v1.5.1/jadx-1.5.1.zip
+unzip -q jadx-1.5.1.zip -d ~/tools/jadx && export PATH=$PATH:~/tools/jadx/bin
+
+# apktool
+wget -q https://raw.githubusercontent.com/iBotPeaches/Apktool/master/scripts/linux/apktool -O ~/tools/apktool
+chmod +x ~/tools/apktool
+
+# bundletool (para .aab)
+wget -q https://github.com/google/bundletool/releases/download/1.17.2/bundletool-all-1.17.2.jar -O ~/tools/bundletool.jar
+
+# Il2CppDumper (para Unity)
+git clone https://github.com/Perfare/Il2CppDumper ~/tools/Il2CppDumper
+
+# Device: frida-server (arm64 físico, x86_64 emulador)
+frida --version  # la versión del server DEBE coincidir exactamente
+adb push frida-server-17.x-android-arm64 /data/local/tmp/fs
+adb shell "chmod 755 /data/local/tmp/fs"
+adb shell "su -c /data/local/tmp/fs &"   # o sin su si frida-gadget
+```
+
 ## ⚠️ GOLDEN RULE — SIEMPRE, SIN EXCEPCION
 
 **Antes de tocar un solo byte, buscar en GitHub.** `github.com/topics/android-reverse-engineering`, `github.com/search?q=<app>`. Si alguien ya lo analizo, fork y adapta. No reinventes la rueda. Nunca.
+
+## Analysis Profiles — elegir antes de empezar
+
+El mismo APK exige flujos distintos según el objetivo. Declarar el perfil al inicio de la sesión:
+
+| Perfil | Objetivo | Fases prioritarias | Output |
+|---|---|---|---|
+| **Pentest** | Encontrar vulnerabilidades explotables (MASVS) | TRIAGE → JAVA → IPC → HOOK | Informe con findings clasificados |
+| **Modding** | Modificar comportamiento persistentemente | TRIAGE → SMALI → REBUILD | APK parcheado y firmado → skill `apk-modding` |
+| **Malware** | Entender capacidades e IoCs | TRIAGE → NATIVE → HOOK (aislado) | IoCs, C2, descripción de payload |
+| **API mapping** | Documentar endpoints para cliente propio | TRIAGE → JAVA → captura tráfico | Lista de endpoints + auth + payloads |
+
+**Regla:** si el objetivo es "modificar la app", delegar la fase de parcheo al skill `apk-modding`. Si es "entenderla", quedarse aquí.
+
+### Quick Start — primera sesión (si eres nuevo en Android RE)
+
+Si nunca has hecho RE de Android, NO empieces con una app de producción. Empieza con una app vulnerable intencionalmente:
+
+```bash
+# 1. Descarga DIVA (Diverse Insecure Vulnerable App)
+wget https://github.com/payatu/diva-android/raw/master/app-debug.apk -O diva.apk
+
+# 2. Instala en dispositivo/emulador
+adb install diva.apk
+
+# 3. Triaje rápido
+jadx -d diva-out/ diva.apk
+aapt dump badging diva.apk | grep -E "package:|launchable|permission"
+```
+
+**Flujo mínimo de 15 minutos para familiarizarte con el pipeline:**
+1. Abre `diva-out/sources/` en jadx-gui → busca `Log.e` y `SharedPreferences` → las vulnerabilidades son deliberadas y visibles.
+2. Lanza mitmproxy: `mitmdump -p 8080 -w diva.flows` → explora la app → revisa qué endpoints llama.
+3. Conecta Frida: `frida -U -f jakhar.aseem.diva` → prueba `android sslpinning disable` con Objection.
+4. Abre el APK con `apktool d diva.apk` → busca `android:debuggable` en el manifest → entiende la estructura de un APK desempaquetado.
+
+Cuando DIVA te resulte trivial, escala a **InsecureBankv2** (`dineshshetty/Android-InsecureBankv2`) y luego a **OWASP UnCrackable L1** (Maddie Stone's RE 101).
+
+**Principio fundamental:** el 80% de las apps reales usan los mismos patrones que estas apps de entrenamiento (OkHttp + Retrofit + SharedPreferences + WebView). Domina primero los fundamentos en terreno conocido.
 
 ## Attack Pipeline
 
@@ -149,6 +237,42 @@ frida -U \
   - **Exported components** (`android:exported="true"` or intent-filters): accessible from other processes
 - **DEX → Smali → Java**: Java/Kotlin → compiled to DEX bytecode → disassembled to Smali (readable format) → decompiled to Java with jadx. If jadx fails, read Smali with the [instruction set](https://source.android.com/docs/core/runtime/instruction-formats).
 
+### AAB / App Bundle (.aab)
+
+Since 2021, Play Store requires `.aab` for new apps. You CANNOT decompile an `.aab` directly with good results — convert it first:
+
+```bash
+# Convert .aab → universal APK (single APK with all resources)
+java -jar bundletool.jar build-apks \
+  --bundle=app.aab \
+  --output=app.apks \
+  --mode=universal \
+  --ks=debug.keystore --ks-pass=pass:android   # requiere firma
+
+unzip -p app.apks universal.apk > universal.apk
+jadx -d out/ universal.apk
+```
+
+**Diferencias clave vs APK:**
+- `resources.arsc` está en formato protobuf compilado — `aapt` clásico falla, usar `aapt2`
+- Sin firma v1: el `.aab` nunca se instala tal cual, Play lo transforma en splits firmados
+- **Dynamic feature modules**: código en módulos `feature_*.dex` descargados on-demand — el análisis del `base` NO los incluye. Listar módulos: `unzip -l app.aab | grep -E "^[^/]+/dex/"`
+- Si solo tienes el dispositivo: `adb shell pm path com.app` te da los splits YA instalados (incluye dynamic features descargados)
+
+### Extracción de APKs desde el dispositivo
+
+```bash
+# Todas las rutas (base + splits)
+adb shell pm path com.target.app
+
+# Pull de cada una
+adb shell pm path com.target.app | cut -d: -f2 | while read p; do
+  adb pull "$p" ./splits/
+done
+
+# Script listo: scripts/extract_splits.sh <package>
+```
+
 ### JNI: Java ↔ Native Bridge
 - **Dynamic Linking**: the native function is named `Java_<package>_<Class>_<method>`. The JNI system resolves it automatically.
 - **Static Linking**: `RegisterNatives` is used in `JNI_OnLoad`. More common in malware/obfuscation because it hides names.
@@ -259,6 +383,17 @@ unzip -l app.apk 2>/dev/null | grep -ciE "assets/www|cordova|ionic|capacitor"
 # → If >0, it's a hybrid app. Check config.xml:
 unzip -p app.apk res/xml/config.xml 2>/dev/null | grep -i "hostname\|IonicWebView"
 # → If it has hostname preference, it uses Ionic WebView with local server
+
+# 8. Search for React Native / Hermes
+unzip -l app.apk 2>/dev/null | grep -iE "index.android.bundle|libhermes.so|libreactnativejni.so" | head -3
+# → libhermes.so  → RN con Hermes bytecode (ver sección React Native)
+
+# 9. Search for Unity / IL2CPP
+unzip -l app.apk 2>/dev/null | grep -iE "libil2cpp.so|libunity.so|global-metadata.dat" | head -3
+# → libil2cpp.so  → Unity IL2CPP (ver sección Unity/IL2CPP)
+# → libmono.so    → Unity Mono (más viejo, DLLs .NET en assets/bin/Data/Managed/)
+
+# 10. One-shot: scripts/triage.sh app.apk  (ejecuta todos los checks)
 ```
 
 **Strategy by result:**
@@ -266,8 +401,10 @@ unzip -p app.apk res/xml/config.xml 2>/dev/null | grep -i "hostname\|IonicWebVie
 OkHttp present      → CertificatePinner.check() + TrustManagerImpl
 Ktor Client         → Only TrustManagerImpl (doesn't use OkHttp)
 Cronet present      → Native BoringSSL (SSL_CTX_set_custom_verify)
-gRPC detected       → Binary traffic (Protobuf), mitmdump captures but can't read
+gRPC detected       → Binary traffic (Protobuf) → sección "gRPC and Protobuf Analysis"
 Flutter             → reFlutter / kill_flutter / iptables transparent
+React Native        → sección "React Native / Hermes" (bridge hook, Hermes bytecode)
+Unity/IL2CPP        → sección "Unity / IL2CPP" (Il2CppDumper, NO leer smali — la lógica está en nativo)
 Declarative NSC     → Check if it trusts user certificates
 ```
 
@@ -513,9 +650,9 @@ PYEOF
 |---|---|---|---|
 | **Legacy REST** | `?function=getX&format=json` | `/1-4/?function=getData&format=json` | ✅ JSON |
 | **Modern REST** | `/v1/app/categories` | `/v1/app/content/page/1` | ✅ JSON |
-| **gRPC** | `google.internal.service.v1.Endpoint/Method` | Binary proto, unreadable without .proto | ❌ Protobuf |
+| **gRPC** | `package.Service/Method` | Binary proto → decodificable black-box (ver sección gRPC) | ⚠️ Protobuf |
 
-**For gRPC:** Traffic is captured in mitmproxy but the body is binary (Protobuf). Without the original `.proto` file you cannot deserialize it. Search for proto hints in the DEX strings.
+**For gRPC:** el body es binario (Protobuf) PERO se puede decodificar sin el `.proto` original usando las técnicas de la sección **"gRPC and Protobuf Analysis"** más abajo: extracción de esquema desde las clases generadas, protoscope black-box, y hook del serializador con Frida.
 
 ## Frida Gotchas
 
@@ -525,6 +662,114 @@ PYEOF
 - NEVER `return undefined` → `return ArrayList.$new()` or `return arguments[0]`
 - `arm64` for physical, `x86` for google_apis emulator
 - **Multiple Frida sessions:** If you run `frida -U <PID>` multiple times, Frida processes accumulate. Kill them with `kill $(pgrep -f "frida.*<PID>")` before re-attaching.
+
+## Frida Detection and Evasion
+
+Las apps modernas detectan Frida por múltiples vectores. Si `frida -f` no arranca o aborta tras 1-2 segundos → probablemente hay detección.
+
+### Detección conocida
+
+| Método de detección | Patrón observado |
+|---|---|
+| Puerto D-Bus/TCP | `/proc/net/tcp`, puertos 27042-27046 por defecto |
+| `ptrace` contra sí mismo | Otra app/threads hace `ptrace(TRACEME)` → falla si Frida ya está attached |
+| `/proc/self/maps` | Strings "frida", "gum", "agent", "gadget" en memory map |
+| `/proc/self/smaps` | Más detallado que maps, busca nombres de bibliotecas |
+| `stat()` de artefactos Frida | `/data/local/tmp/frida-server`, `/data/local/tmp/re.frida.server` |
+| `readlink()` de /proc/self/exe o fd | Revela nombre del proceso Frida |
+| `find /data/local/tmp` | App escanea directorios temporales |
+| Tamaño de pila (stack canaries) | Frida modifica el tamaño del stack → detectable |
+| Tiempo de respuesta de JNI | El hook introduce latencia → detectable por timers |
+
+### Estrategia de evasión sistemática
+
+**Orden recomendado:**
+
+```bash
+# 1. Cambiar nombre de frida-server y ruta
+cp frida-server-17.x-android-arm64 /data/local/tmp/.sys-tool-1
+#  2. Puerto no estándar:
+/data/local/tmp/.sys-tool-1 -P 31337
+# PC:
+frida -U -p <PID> --listen 0.0.0.0:31337
+
+# 3. Si sigue detectando: evitar /proc/self/maps completamente
+# scripts/frida_stealth.js (hook de open/fopen/strstr/strstr/memmem)
+```
+
+**Script base de evasión (JavaScript → referencia, mejor usar `frida-expert`):**
+
+```javascript
+// Hook estratégico: nativo (libc) antes de que JNI se inicialice
+Interceptor.attach(Module.findExportByName("libc.so", "strstr"), {
+    onEnter: function(args) {
+        var needle = args[1].readCString();
+        if (needle && /frida|gum|agent|gadget/i.test(needle)) {
+            this.hide = true;
+        }
+    },
+    onLeave: function(retval) {
+        if (this.hide) retval.replace(0); // NULL = no encontrado
+    }
+});
+
+Interceptor.attach(Module.findExportByName("libc.so", "fopen"), {
+    onEnter: function(args) {
+        var path = args[0].readCString();
+        if (path && /maps|status|smaps|\/proc\/self/.test(path)) {
+            this.block = true;
+        }
+    },
+    onLeave: function(retval) {
+        if (this.block) {
+            // Retorna NULL (archivo inaccesible) → la app interpreta "no se pudo abrir"
+            retval.replace(ptr(0));
+        }
+    }
+});
+
+// Hook ptrace PTRACE_TRACEME → retornar 0 (éxito, aunque haya debugger)
+Interceptor.attach(Module.findExportByName(null, "ptrace"), {
+    onEnter: function(args) {
+        if (args[0].toInt32() === 0) this.is_traceme = true;
+    },
+    onLeave: function(retval) {
+        if (this.is_traceme) retval.replace(0);
+    }
+});
+```
+
+**Alternativas si Frida es detectada de forma agresiva (orden de preferencia):**
+
+1. **Renombrar + puerto aleatorio** + script de evasión básico
+2. **Frida-Gadget** embebido en APK (sin frida-server en el dispositivo)
+3. **LSPosed** (persistente, ningún proceso externo)
+4. **Emulación Android limpia** (sin root visible, sin Magisk)
+
+**Detalle de cada alternativa:**
+
+1. **Renombrar + puerto aleatorio + stealth.js**: funciona en ~60% de apps con detección básica. Si la app usa `/proc/self/maps` o `strstr`, el script de evasión lo bloquea.
+2. **Frida-Gadget**: embebes `libfrida-gadget.so` en el APK y configuras `libfrida-gadget.config.so` para modo `listen`. No hay proceso `frida-server` visible, no hay puerto D-Bus. La app carga a Frida como una librería más. Ideal cuando el detector busca procesos externos.
+3. **LSPosed**: un módulo Xposed no necesita PC conectado ni proceso externo. El hook se ejecuta dentro del propio proceso de la app vía Zygote. Requiere root pero es el más persistente. Limitación: solo Java (no nativo directo).
+4. **Emulación con AVD escribible**: crea un emulador con `--writable-system` y elimina toda traza de root (sin Magisk, sin su, sin busybox). Usa `adb root` del emulador en lugar de Magisk, que es invisible para las apps. Ventaja: snapshot para restaurar estado limpio en segundos.
+   ```bash
+   # Crear AVD con system escribible (API 33+)
+   avdmanager create avd -n re_lab -k "system-images;android-33;google_apis;x86_64" --force
+   # Arrancar con writable system + adb root
+   emulator -avd re_lab -writable-system -no-snapshot &
+   adb root && adb remount
+   # Push frida-server a /system/xbin (no a /data/local/tmp)
+   adb push frida-server-17.x-android-x86_64 /system/xbin/.netd
+   adb shell chmod 755 /system/xbin/.netd
+   /system/xbin/.netd -l 0.0.0.0:31337 &
+   ```
+5. **DBI alternativo (QBDI/Triton)** — si Frida es totalmente bloqueada y necesitas tracing nativo: QBDI ( Quarkslab) para DBI a nivel de instrucción ARM64, o Triton (concolic execution). Más complejo pero indetectable por fingerprints de Frida. Requiere compilación cruzada desde PC.
+
+**Tests de validación:** después de aplicar evasión, ejecutar:
+```bash
+# Si arranca sin crash y funciona 60+ segundos, bypass exitoso
+frida -U -f com.target.app -l stealth.js --runtime=v8 -e "console.log('ALIVE')"
+```
 
 ## Modern Root Hiding
 
@@ -579,13 +824,15 @@ adb shell su -c "cat /data/adb/magisk.db" | strings | grep -i denylist
 | Root | Magisk, KernelSU, KernelSU-Next | TrickyStore, Shamiko, HMA-OSS |
 | Stealth | fridare, phantom-frida | renef (memfd, no ptrace) |
 
-## Top 18 Errors
+## Top 20 Errors
 
 | Error | Fix |
 |---|---|
 | Cert DER 812 bytes | Regenerate WITHOUT -text |
 | verifyChain args mismatch | Hook ALL overloads |
 | Frida dies alone | `tail -f /dev/zero \| frida ...` |
+| Frida detected/killed by app | See "Frida Detection and Evasion" section; rename server + random port |
+| AAB extracts to very few files | `.aab` is not installable — requires `bundletool build-apks --mode=universal` |
 | WebView won't load with proxy | No proxy; Magisk DenyList |
 | setTimeout not function | Inside Java.perform() |
 | JNI crash SIGABRT | return ArrayList, not undefined |
@@ -656,16 +903,67 @@ aapt dump badging app.apk       # package, version, permissions, SDK, exported a
 aapt dump permissions app.apk   # only declared permissions
 ```
 - Permissions to check first: `READ_SMS`, `RECEIVE_SMS` (OTP interception), `SYSTEM_ALERT_WINDOW` (overlay), `REQUEST_INSTALL_PACKAGES`, `BIND_ACCESSIBILITY_SERVICE`.
-- `android:allowBackup="true"` → `adb backup` extracts data without root (tokens, SQLite DBs).
+- `android:allowBackup="true"` → `adb backup` extracts data without root (tokens, SQLite DBs, tokens SQLite, shared_prefs).
 - `android:debuggable="true"` (rare in production) → `jdb`/`gdb` without root or Frida.
 
-## MobSF (Mobile Security Framework)
+### Deep Link and App Link Exploitation
+
+Deep links (`scheme://host/path`) y App Links (`http(s)://domain/path` con verificación) son un vector de ataque subestimado en apps Android.
+
+**Enumerar declaradas:**
 
 ```bash
-docker run -it --rm -p 8000:8000 opensecurity/mobile-security-framework-mobsf:latest
-# Upload APK at localhost:8000 → report: permissions, hardcoded secrets, CVEs, exported components
+aapt dump xmltree app.apk AndroidManifest.xml | grep -B5 'android:scheme\|action.*VIEW\|category.*BROWSABLE'
+# O más detallado:
+jadx -d out/ app.apk && grep -rn 'android.intent.action.VIEW' out/resources/AndroidManifest.xml -A3 | grep 'scheme\|host\|pathPrefix'
 ```
-- Automatic triage in 2-5 min. Useful before manual analysis.
+
+**Vectores de ataque:**
+
+| Vector | Descripción | Prueba |
+|---|---|---|
+| **Scheme hijacking** | Cualquier app maliciosa registra el mismo custom scheme (`myapp://callback`) y el OS lo abre en su lugar | `adb shell am start -d "myapp://login?token=XYZ"` |
+| **App Links sin verificar** | `autoVerify="true"` pero `assetlinks.json` 404 o mal firmado → fallback a scheme (hijackable) | `curl https://domain/.well-known/assetlinks.json` |
+| **Inyección en Intent** | `Intent.parseUri()` sin sanitización → path traversal, content:// injection | Fuzz con `"myapp://open?data=file:///..%2f..%2fdata%2fdata%2fcom.target%2fshared_prefs%2fprefs.xml"` |
+| **WebView injection** | Deep link que alimenta WebView sin validar URL → Open Redirect/XSS | `"myapp://web?url=javascript:alert(1)"` |
+
+### AIDL / Binder Exploitation
+
+Los servicios exported sin permisos son callable desde cualquier app. Actúan como una RPC sin autenticación de caller.
+
+**Enumerar:**
+
+```bash
+aapt dump xmltree app.apk AndroidManifest.xml | grep -E 'service.*exported.*"true"' -A3
+# Verificar si tiene android:permission definido
+```
+
+**Generar cliente AIDL atacante (autorizado):**
+1. Extraer el `.aidl` del APK (buscar `I*Service` implementando `IInterface`)
+2. Compilar stub AIDL en un proyecto Android separado
+3. `asBinder().transact(CODE, data, reply, 0)` con parcelables malformados
+
+**Fuzzing vía adb:**
+```bash
+adb shell service call <service_name> <txn_code> i32 <arg>
+# Saltos de control si el IBinder no valida `data.enforceInterface()`
+```
+
+### ContentProvider and DocumentProvider Path Traversal
+
+```bash
+# Providers exported sin permisos
+aapt dump xmltree app.apk AndroidManifest.xml | grep -B2 'provider.*exported.*"true"'
+# Path traversal via content://
+adb shell content query --uri "content://com.target.files/docs/..%2f..%2f..%2fdata%2fdata%2fcom.target%2fdatabases%2f"
+```
+
+**DocumentProvider** (SAF): si `documentId` construye path sin validar `..`:
+```bash
+# Probar traversal en DocumentsContract
+adb shell content call --uri content://com.target.documents --method openDocument \
+  --arg 'primary:../../shared_prefs/target.xml'
+```
 
 ## Native Libraries: Quick Identification
 
@@ -678,13 +976,48 @@ file lib.so
 
 ## Expected Output
 
-At the end of an RE session, you must produce:
+At the end of an RE session, you must produce structured deliverables. The format depends on the **Analysis Profile** chosen at the start.
+
+### General Deliverables
 
 1. **Decompiled code** in the output directory (`sources/`).
 2. **Architecture summary**: package structure, pattern (MVP/MVVM/Clean), Application class, exported components.
 3. **API documentation**: all discovered endpoints with method, path, parameters, auth headers, and the call chain from where they are invoked.
 4. **Call flow map**: key UI-to-network routes, especially login, registration, and critical functions (payments, sensitive data).
 5. If dynamic analysis applies: **classified capture file** (`.flows`) + notes on which pinning/root-detection layers were bypassed and how.
+
+### Report Template (for Pentest/MASVS Profile)
+
+Copy and fill this template when producing a final report. Filling it demonstrates thoroughness and produces transferable, high-value output.
+
+**Copiar plantilla desde:** `templates/MASVS-report-template.md`
+
+#### Executive Summary
+- **Target**: `com.example.app` v3.4.1 (SHA-256: `...`)
+- **Scope**: Static analysis (jadx), Dynamic analysis (Frida + mitmproxy), Network intercept
+- **Device**: Android 14, Magisk Alpha, KernelSU-Next
+- **Summary**: N findings of which X critical, Y high. Primary categories: [MASVS-STORAGE, MASVS-NETWORK, MASVS-PLATFORM].
+
+#### Findings Table
+
+| ID | MASVS Category | Description | CVSS | Severity | PoC | Remediation |
+|---|---|---|---|---|---|---|
+| MASVS-001 | MASVS-NETWORK | OkHttp CertificatePinner pinning can be disabled at runtime via Frida (Layer 2 bypass) | 5.3 | Medium | `frida -U -f com.app -l ssl_pinning_bypass.js` | Pin on TrustManager level AND implement cert chain validation |
+| MASVS-002 | MASVS-PLATFORM | Deep link `myapp://auth` exported with no validation → token hijacking | 7.5 | High | `adb shell am start -d "myapp://auth?token=XYZ"` | Add referrer validation; require user intent |
+| ... | ... | ... | ... | ... | ... | ... |
+
+#### Technical Annex
+- **Network endpoints** (all captured, classified by protocol: REST/gRPC/WebSocket)
+- **Call chains** (login → Activity → ViewModel → Repository → OkHttp → endpoint)
+- **Frida scripts used** (with versions: Frida 17.x, mitmproxy 12.x)
+- **Native analysis** (if applicable: .so functions mapped, patches applied)
+- **Anti-debug/root bypass summary** (layers bypassed: which method, which script)
+
+#### Evidence Annex
+- Screenshots of decompiled classes (jadx)
+- `.flows` capture files with path to critical flows
+- JSON/Protobuf decoded samples (if gRPC)
+- `mitmdump` command history used for capture
 
 ## Environment
 
@@ -729,6 +1062,271 @@ Flutter usa **BoringSSL compilado dentro de `libflutter.so`**, no el del sistema
 3. **iptables transparent** — redirigir tráfico a mitmproxy en modo transparente.
 
 **Para análisis profundo de Flutter, cargar el skill `flutter-reverse-engineering`.**
+
+---
+
+## gRPC and Protobuf Analysis
+
+gRPC es dominante en Google apps, fintech, Discord y backends modernos. El tráfico se captura en mitmproxy (HTTP/2) pero el body es Protobuf binario. **SÍ se puede analizar sin el `.proto` original.**
+
+### Anatomía de un frame gRPC
+
+```
+[1 byte: compressed flag (00)] [4 bytes: big-endian message length] [N bytes: protobuf message]
+```
+
+El path HTTP/2 revela servicio y método: `/com.example.UserService/GetUser`.
+
+### 1. Extraer el esquema desde el DEX (la mejor opción)
+
+Las clases Java/Kotlin generadas por protoc están EN el APK y revelan campos, tipos y nombres:
+
+```bash
+# Clases generadas por protoc (sobreviven a ProGuard: los nombres de campo están en literales)
+rg -n "extends .*GeneratedMessageLite|extends .*AbstractMessage" jadx-out/ -l | head -30
+
+# Builders → cada campo tiene setXxx()/getXxx()
+rg -n "newBuilder\(\)|getDefaultInstance\(\)" jadx-out/ | head -20
+
+# Los FieldDescriptors serializan nombres de campo como strings → buscar en clases del servicio
+rg -n '"[a-z_]+", *[0-9]+, *[A-Z]' jadx-out/ --glob "**/grpc/**" | head
+```
+
+Reconstruir el `.proto` a mano desde los getters/setters: `getUserId()` → `string user_id = N;` donde N es el field number (visible en el parser o en `internal_field_data`).
+
+### 2. Black-box decode con protoscope
+
+Sin esquema, Protobuf sigue siendo auto-descriptivo (field numbers + wire types):
+
+```bash
+# Extraer body de un flow de mitmproxy (saltando los 5 bytes de header gRPC)
+tail -c +6 request_body.bin | protoscope
+# → 1: {"user@example.com"}  2: 0x1a2b3c
+
+# O en Python puro (script listo: scripts/extract_proto.py)
+python3 scripts/extract_proto.py request_body.bin
+```
+
+Wire types: `0=varint, 1=64-bit, 2=length-delimited (string/bytes/embedded), 5=32-bit`. Con field number + tipo + valores de ejemplo, el esquema se deduce.
+
+### 3. Hook del serializador con Frida (el más fiable)
+
+Los mensajes pasan por `toByteArray()` al enviar y `parseFrom()` al recibir — hook universal:
+
+```javascript
+// scripts/frida_grpc_hook.js — dump de mensajes protobuf con su clase
+Java.perform(function() {
+    // Lite runtime (Android usa casi siempre protobuf-javalite)
+    var candidates = [
+        "com.google.protobuf.GeneratedMessageLite",
+        "com.google.protobuf.AbstractMessageLite"
+    ];
+    candidates.forEach(function(cls) {
+        try {
+            var MsgLite = Java.use(cls);
+            MsgLite.toByteArray.implementation = function() {
+                var bytes = this.toByteArray();
+                console.log("[Proto→] " + this.getClass().getName() +
+                            " (" + bytes.length + "B): " + bytesToHex(bytes));
+                return bytes;
+            };
+        } catch(e) {}
+    });
+
+    // Interceptar el método gRPC stub directamente (nombres sobreviven en grpc.MethodDescriptor)
+    try {
+        var MethodDescriptor = Java.use("io.grpc.MethodDescriptor");
+        MethodDescriptor.getFullMethodName.implementation; // exists check
+        Java.choose("io.grpc.MethodDescriptor", {
+            onMatch: function(inst) {
+                console.log("[gRPC] Method: " + inst.getFullMethodName());
+            }, onComplete: function() {}
+        });
+    } catch(e) {}
+
+    function bytesToHex(b) {
+        var h = [];
+        for (var i = 0; i < b.length; i++) h.push(("0" + (b[i] & 0xFF).toString(16)).slice(-2));
+        return h.join("");
+    }
+});
+```
+
+### 4. Replay con grpcurl
+
+```bash
+# Con esquema reconstruido:
+grpcurl -import-path . -proto user.proto -d '{"user_id":"123"}' \
+  -H "authorization: Bearer $TOKEN" api.target.com:443 com.example.UserService/GetUser
+
+# Sin TLS propio: usar el cert del dispositivo capturado o -insecure en lab
+```
+
+**Nota TLS:** gRPC sobre Android suele ir dentro de Cronet/OkHttp → los bypass de SSL de la capa correspondiente aplican igual.
+
+---
+
+## Unity / IL2CPP Analysis
+
+El 60%+ de juegos Android compila C# a nativo con IL2CPP. **El smali es solo el launcher — TODA la lógica está en `libil2cpp.so`.** No pierdas tiempo en jadx más allá del manifest.
+
+### Detección y extracción
+
+```bash
+unzip -l app.apk | grep -iE "libil2cpp.so|global-metadata.dat"
+# Extraer (ojo: pueden estar en split_config.arm64_v8a.apk):
+unzip -p app.apk lib/arm64-v8a/libil2cpp.so > libil2cpp.so
+unzip -p app.apk assets/bin/Data/Managed/Metadata/global-metadata.dat > global-metadata.dat
+```
+
+**Verificar metadata no cifrada:** los primeros 4 bytes deben ser `AF 1B B1 FA` (magic `0xFAB11BAF`). Si no lo son → metadata cifrada, buscar la rutina de descifrado en el `.so` (hook `il2cpp_init` o memscan en runtime, ver abajo).
+
+### Il2CppDumper — el pipeline completo
+
+```bash
+cd ~/tools/Il2CppDumper
+dotnet run libil2cpp.so global-metadata.dat ./out/
+
+# Output:
+#   dump.cs        → todas las clases, campos, métodos con RVA
+#   script.json    → offsets para Ghidra/IDA
+#   il2cpp.h       → headers C++
+```
+
+`dump.cs` ejemplo:
+```csharp
+// RVA: 0x1A2B3C0 Offset: 0x1A2B3C0
+public bool get_IsPremium() { }
+// RVA: 0x2C4D5E0 Offset: 0x2C4D5E0
+public void AddCoins(int amount) { }
+```
+
+### Importar a Ghidra con símbolos
+
+1. Importar `libil2cpp.so` (AARCH64:LE:64:v8A), NO auto-analyze todavía
+2. `Window → Script Manager → ghidra_with_struct.py` (viene con Il2CppDumper)
+3. Seleccionar `script.json` → funciones renombradas con firmas reales
+4. Auto-analyze después de renombrar
+
+### Parcheo típico (autorizado)
+
+`get_IsPremium()` → retornar true:
+
+```
+# ARM64: MOV W0, #1 ; RET
+bytes: 20 00 80 52 C0 03 5F D6
+```
+
+```bash
+# Script listo: scripts/il2cpp_patch.py libil2cpp.so 0x1A2B3C0
+python3 scripts/il2cpp_patch.py libil2cpp.so 0x1A2B3C0 --ret1
+# Verificar:
+aarch64-linux-gnu-objdump -d --start-address=0x1A2B3C0 --stop-address=0x1A2B3C8 libil2cpp.so
+```
+
+**Ojo:** en el `.so` el file offset ≠ RVA si hay segmentos con align distinto. Il2CppDumper reporta ambos; usar "Offset" para parchear el fichero.
+
+### Frida en IL2CPP
+
+```javascript
+// Hook directo por RVA (de dump.cs) — no hace falta resolver nombres
+var base = Process.findModuleByName("libil2cpp.so").base;
+Interceptor.attach(base.add(0x1A2B3C0), {   // get_IsPremium
+    onLeave: function(retval) { retval.replace(1); }
+});
+Interceptor.attach(base.add(0x2C4D5E0), {   // AddCoins
+    onEnter: function(args) {
+        console.log("AddCoins(" + args[1].toInt32() + ")");
+        args[1] = ptr(999999);  // argumentos: X0=this, X1=amount
+    }
+});
+```
+
+**Metadata cifrada en runtime:** si `global-metadata.dat` está cifrada, IL2CPP la descifra en memoria antes de `il2cpp_init`. Dumpear desde el proceso:
+
+```bash
+frida -U -f com.game -e '
+Process.enumerateRanges({protection:"rw-",coalesce:true}).forEach(function(r){
+    try {
+        var magic = Memory.readU32(r.base);
+        if (magic === 0xFAB11BAF) console.log("metadata @ " + r.base + " size " + r.size);
+    } catch(e){}
+});' 
+# luego Memory.readByteArray → write a disco via send()/recv
+```
+
+**Mono (Unity antiguo):** si hay `libmono.so`, las DLLs .NET están en `assets/bin/Data/Managed/*.dll` — decompilar directamente con ILSpy/dnSpy. Mucho más fácil que IL2CPP.
+
+**Para modding profundo de juegos (bypass de protecciones Unity, Cheat Engine, speedhack), el skill `apk-modding` cubre Unity/IL2CPP operativo.**
+
+---
+
+## React Native / Hermes Analysis
+
+Apps bancarias, retail y delivery usan RN cada vez más. La lógica de negocio está en JS, no en DEX.
+
+### Detección
+
+```bash
+unzip -l app.apk | grep -iE "index.android.bundle|libhermes.so|libreactnativejni.so"
+```
+
+### Caso 1: Bundle JS plano (debug o sin Hermes)
+
+`assets/index.android.bundle` es JavaScript legible (minificado). Beautificar y auditar directamente:
+
+```bash
+npx js-beautify index.android.bundle > bundle.js
+rg -n "fetch\(|axios|api_key|secret" bundle.js
+```
+
+### Caso 2: Hermes bytecode (producción)
+
+Magic bytes del bundle: `c6 1f bc 03 c1 03 19 1f` (versionado — el descompilador debe coincidir con la versión de Hermes).
+
+```bash
+# Identificar versión
+strings libhermes.so | grep -i "hermes" | head
+
+# Desensamblar (hbc -> pseudo-asm)
+hbcdump index.android.bundle > bundle.hbc.asm
+
+# Decompilar a pseudo-JS
+# hermes-dec (https://github.com/P1sec/hermes-dec)
+python3 hbc_decompiler.py index.android.bundle bundle_decompiled.js
+```
+
+**Si la versión de Hermes no está soportada:** parchear el bundle es frágil. Alternativa dinámica: hook del bridge.
+
+### Hook del bridge JS↔Java con Frida
+
+Los módulos nativos expuestos a JS (`@ReactMethod`) son el attack surface real:
+
+```javascript
+Java.perform(function() {
+    // Toda llamada JS→Java pasa por aquí
+    var JavaMethodWrapper = Java.use("com.facebook.react.bridge.JavaMethodWrapper");
+    JavaMethodWrapper.invoke.implementation = function(jsInstance, args) {
+        console.log("[RN→Java] " + this.getMethod().getName());
+        return this.invoke(jsInstance, args);
+    };
+
+    // Promesas JS (auth, pagos)
+    var Promise = Java.use("com.facebook.react.bridge.PromiseImpl");
+    Promise.resolve.implementation = function(value) {
+        console.log("[RN Promise.resolve] " + value);
+        return this.resolve(value);
+    };
+});
+```
+
+### SSL pinning en RN
+
+La capa de red es **OkHttp nativa** (la misma que una app nativa) → aplicar los bypass estándar de las capas 1-2. El JS hereda el trust store configurado en nativo. Si usa `react-native-ssl-pinning` (fetch con `sslPinning` option), la verificación extra está en Java → buscar la clase del módulo y no-op.
+
+### Parchear el bundle
+
+Rebuild estático viable: `apktool b` incluye el bundle modificado si es JS plano. Con Hermes, hay que recompilar el bundle con `hermesc` de la MISMA versión — normalmente no merece la pena frente a Frida/bridge hooking.
 
 ---
 
@@ -1452,5 +2050,16 @@ Referencia completa de herramientas en `reports/android-re-toolbox.md` (16 secci
 
 ## Changelog
 
+- **2026-07-20 (v4 — Major Expansion)**: 
+  - **Frameworks modernos**: gRPC/Protobuf análisis completo (extracción de .proto desde DEX, decode black-box con protoscope/script, hook Frida, grpcurl replay), Unity/IL2CPP (pipeline Il2CppDumper + Ghidra, patch ARM64, metadata cifrada), React Native/Hermes (detección, descompilación hbc, bridge hook).
+  - **Attack surface extension**: Deep Links/App Links hijacking, AIDL/Binder exploitation, ContentProvider/DocumentProvider path traversal.
+  - **AAB/App Bundle**: conversión a APK universal, módulos dinámicos, bundletool.
+  - **Frida detection/evasion**: árbol de decisión por 9 métodos de detección, estrategia de evasión escalonada (renombrar → port random → maps evasion → gadget → LSPosed).
+  - **Analysis Profiles**: pentest / modding / malware / api-mapping.
+  - **Report Template**: plantilla MASVS con tabla de findings, anexos técnicos y de evidencia.
+  - **Scripts/ operativos**: `triage.sh` (one-shot APK framework detection), `extract_splits.sh` (pull de dispositivo), `extract_proto.py` (decode protobuf black-box), `il2cpp_patch.py` (patch .so por RVA).
+  - **Setup environment**: instalación completa de tools cero desde Debian/Ubuntu.
+  - **Top 18 → Top 20 Errors**: añadidos "AAB decompila a vacío" y "Anti-Frida crash".
+  - **Correcciones**: bloque de código huérfano eliminado, backticks balanceados en tablas.
 - 2026-07-19 (v3): Actualizacion 2026: prerrequisitos con versiones de herramientas, captura de trafico QUIC/HTTP3 y mTLS, bypass de client certificate pinning, root hiding moderno (KernelSU-Next, Zygisk Next, TrickyStore, PIF), estado actual de Play Integrity API 2026, cookbook Frida mejorado con bypass de root, tabla de herramientas actualizada, Top 18 errores, referencias cruzadas a `apk-modding`, `frida-expert` y `hacktricks-reference`.
 - 2026-07-18 (v2): Ampliación con Flutter/Dart RE (referencia cruzada a skill dedicado), Kotlin deep dive, desofuscación, criptoanálisis, PairipCore/Dex2C, Play Integrity/SafetyNet, anti-debugging extendido, OWASP MASTG/MASVS, MobSF automation, Ghidra ARM64 workflow (referencia cruzada a skill dedicado + pyghidra), Frida advanced (CModule, memory scan, DexClassLoader, anti-suicide), toolbox reference, referencias cruzadas a skills relacionados.

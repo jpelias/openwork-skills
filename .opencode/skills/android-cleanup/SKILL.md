@@ -153,9 +153,11 @@ adb shell su -c "ls /data/adb/modules/"
 
 # Known dangerous modules — remove them:
 # sigbypass   → disables APK signature verification (breaks PairipCore, Play Integrity)
+# sigspoof    → signature spoofing (same as sigbypass, alternative name)
 # riru-*      → Riru/Xposed hooks
 # zygisk-*    → Zygisk modules
 adb shell su -c "rm -rf /data/adb/modules/sigbypass"
+adb shell su -c "rm -rf /data/adb/modules/sigspoof"
 adb shell su -c "rm -rf /data/adb/modules/riru_*"
 ```
 
@@ -202,7 +204,7 @@ adb shell su -c "ls /data/local/tmp/*frida* /data/local/tmp/*gadget* 2>/dev/null
 adb shell su -c "find /data/local /data/local/tmp -name '*command-line*' 2>/dev/null"
 
 # No dangerous Magisk modules
-adb shell su -c "ls /data/adb/modules/ | grep -iE 'sigbypass|riru|bypass'"
+adb shell su -c "ls /data/adb/modules/ | grep -iE 'sigbypass|sigspoof|riru|bypass|spoof'"
 
 # SELinux must be Enforcing
 adb shell getenforce
@@ -254,8 +256,8 @@ adb shell su -c "magisk --denylist rm <package>"
 | SSL errors in all apps | CA bind mount still active | Step 4 |
 | Specific apps blocked from network | Magisk DenyList interfering | Magisk section |
 | Network works but specific ports blocked | Leftover iptables rules | Step 3 |
-| App silently fails (no crash, no error) | Magisk `sigbypass` module or Frida Gadget leftover | Steps 1 + 9 |
-| `libpairipcore.so` crash / PairipCore fails | `sigbypass` hooking PackageManager | Step 9 |
+| App silently fails (no crash, no error) | Magisk `sigbypass`/`sigspoof` module or Frida Gadget leftover | Steps 1 + 9 |
+| `libpairipcore.so` crash / PairipCore fails | `sigbypass`/`sigspoof` hooking PackageManager | Step 9 |
 | SELinux Permissive persists after reboot | Magisk module or init script calling `setenforce 0` | Step 10 + check `service.sh` |
 
 ## Base Directory

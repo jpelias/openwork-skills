@@ -10,6 +10,24 @@ If you re-sign the APK with `debug.keystore`, the fingerprint changes. Google re
 
 **There is no client-side bypass.** The validation happens inside Google Play Services, not in the app.
 
+### ⛔ PROHIBIDO: Crear APIs, registrarse en servicios, o usar navegador para consolas cloud
+
+**NUNCA, bajo ninguna circunstancia, el agente debe:**
+
+1. Crear una API key de Google (Maps, Places, Firebase, etc.)
+2. Navegar a `console.cloud.google.com`, `console.firebase.google.com`, o similares
+3. Registrarse, crear cuentas, o habilitar APIs en Google Cloud Platform
+4. Usar el navegador para cualquier consola de administracion cloud
+5. Hacer lo mismo con AWS, Azure, Mapbox, o cualquier otro proveedor de APIs cloud
+
+**Motivo:** El agente no tiene capacidad de completar formularios web complejos (Angular Material, React), no puede resolver CAPTCHAs, no tiene metodo de pago, y no debe gastar tiempo en tareas imposibles. Ademas, el usuario NO quiere que se haga.
+
+**Alternativas validas:**
+- Usar APK original con firma valida + Frida en runtime
+- Buscar keys unrestricted en APKs ya moddeadas (resources.arsc)
+- Firmar con AOSP testkey si se encuentra una key compatible
+- Reemplazar Google Maps con OSMDroid/tiles directos
+
 ### The solution: sign with AOSP testkey + find unrestricted API key
 
 Modders use a well-known **AOSP testkey** (publicly available in the Android source tree) and embed an **unrestricted** Google API key (no SHA-1 restriction, or restricted only by package name) taken from another modded app.
