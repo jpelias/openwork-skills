@@ -138,6 +138,8 @@ NATIVE  → Ghidra/IDA/radare2 → pattern scan → memory patch
 
 **NEVER USE `settings put global http_proxy`. NEVER USE iptables DNAT. DON'T WASTE TIME WITH FIREFOX, VIVALDI, OR MANUAL CERTIFICATES. NONE OF THAT WORKS.**
 
+> **Nota:** La prohibición de iptables DNAT aplica a **redirigir tráfico a un proxy** (raw TLS no es interpretable por mitmdump regular). Sí se puede usar iptables para **bloquear o filtrar tráfico específico** (ej: bloquear UDP 443 para forzar HTTP/2).
+
 ### Decision tree
 
 ```
@@ -471,134 +473,33 @@ adb push $HASH.0 /sdcard/ && adb shell su -c "cp /sdcard/$HASH.0 /system/etc/sec
 adb shell su -c "chmod 644 /system/etc/security/cacerts/$HASH.0; mount -o ro,remount magisk /system/etc/security/cacerts"
 ```
 
-## Frida Cookbook
+## Frida Quick Reference
 
-> **Skill dedicado:** `.opencode/skills/frida-expert/SKILL.md`
->
-> El skill `frida-expert` contiene el cookbook completo de Frida con scripts verificados de CodeShare y HTTP Toolkit: SSL pinning (14 librerias), root bypass (5 vectores), anti-Frida, crypto intercept, OkHttp3 interceptor, native connect hook, Flutter BoringSSL, CModule, memory scanning. Usarlo como referencia principal.
->
-> Aqui solo se mantienen los snippets esenciales para consulta rapida:
+> **Skill completo:** `frida-expert` — cookbook con scripts verificados: SSL pinning (14 librerías), root bypass (5 vectores), anti-Frida, crypto intercept, OkHttp3 interceptor, native connect hook, Flutter BoringSSL, CModule, memory scanning.
 
-```javascript
-// === SSL/TLS ===
-var TMI=Java.use('com.android.org.conscrypt.TrustManagerImpl')
-TMI.verifyChain.overloads.forEach(o=>o.implementation=function(){return arguments[0]})
-TMI.checkTrustedRecursive.overloads.forEach(o=>o.implementation=function(){return Java.use('java.util.ArrayList').$new()})
+### Técnicas principales (tabla resumen)
 
-Java.use('okhttp3.CertificatePinner').check.overloads.forEach(o=>o.implementation=function(){})
-Java.use('android.webkit.WebViewClient').onReceivedSslError.overload('android.webkit.WebView','android.webkit.SslErrorHandler','android.net.http.SslError').implementation=function(v,h,e){h.proceed()}
-Java.use('javax.net.ssl.HostnameVerifier').verify.implementation=function(){return true}
+| Técnica | Bypass | Skill reference |
+|---|---|---|
+| SSL pinning (OkHttp) | `CertificatePinner.check` → no-op | `frida-expert` § SSL |
+| SSL pinning (TrustManager) | `verifyChain` + `checkTrustedRecursive` → bypass | `frida-expert` § SSL |
+| SSL pinning (Cronet/BoringSSL) | `SSL_CTX_set_custom_verify` → NULL callback | `frida-expert` § SSL |
+| Root detection | File.exists, Runtime.exec, SystemProperties, Build.TAGS, Debug | `frida-expert` § Root |
+| Crypto intercept | Cipher.doFinal, Mac.doFinal, MessageDigest | `frida-expert` § Crypto |
+| Anti-Frida | strstr/fopen/memmem hooks, CModule | `frida-expert` § Anti-Frida |
+| Anti-suicide | System.exit, Runtime.exit, Process.killProcess → block | `frida-expert` § Anti-suicide |
+| CModule | Hooks nativos en C (más rápido que JS) | `frida-expert` § CModule |
+| Memory scanning | Memory.scanSync, pattern matching | `frida-expert` § Memory |
+| DexClassLoader | Interceptar clases cargadas dinámicamente | `frida-expert` § Advanced |
 
-// === Root (7 techniques) ===
-// File.exists → filter su/magisk/frida/xposed
-// Runtime.exec("su") → Fake Process (exitValue=0, empty streams)
-// UnixFileSystem.checkAccess → native layer
-// PackageManager.getPackageInfo → NameNotFoundException
-// SystemProperties.get → ro.debuggable=0, ro.secure=1
-// Build.TAGS → "release-keys"
-// Debug.isDebuggerConnected → false
+### Gotchas importantes
 
-Java.perform(function() {
-    // 1. File.exists
-    var File = Java.use("java.io.File");
-    File.exists.implementation = function() {
-        var path = this.getAbsolutePath();
-        var blocked = ["/system/bin/su","/system/xbin/su","/sbin/su","/su/bin/su",
-                       "/data/local/xbin/su","/data/local/bin/su","/system/app/Superuser.apk",
-                       "/magisk","/sbin/.magisk","/data/adb/magisk","/data/local/tmp/frida-server"];
-        if (blocked.some(b => path.indexOf(b) !== -1)) {
-            console.log("[Root] File.exists blocked: " + path);
-            return false;
-        }
-        return this.exists();
-    };
-
-    // 2. Runtime.exec
-    var Runtime = Java.use("java.lang.Runtime");
-    var IOException = Java.use("java.io.IOException");
-    Runtime.exec.overload("java.lang.String").implementation = function(cmd) {
-        if (cmd && (cmd.indexOf("su") !== -1 || cmd.indexOf("magisk") !== -1 || cmd.indexOf("frida") !== -1)) {
-            console.log("[Root] Runtime.exec blocked: " + cmd);
-            throw IOException.$new("Command not found");
-        }
-        return this.exec(cmd);
-    };
-
-    // 3. SystemProperties
-    try {
-        var SystemProperties = Java.use("android.os.SystemProperties");
-        SystemProperties.get.overload("java.lang.String").implementation = function(key) {
-            if (key === "ro.debuggable") return "0";
-            if (key === "ro.secure") return "1";
-            if (key === "ro.build.tags") return "release-keys";
-            return this.get(key);
-        };
-    } catch(e) {}
-
-    // 4. Build.TAGS
-    var Build = Java.use("android.os.Build");
-    Build.TAGS.value = "release-keys";
-
-    // 5. Debug
-    var Debug = Java.use("android.os.Debug");
-    Debug.isDebuggerConnected.implementation = function() { return false; };
-});
-
-// === Crypto ===
-var C=Java.use('javax.crypto.Cipher')
-C.getInstance.overload('java.lang.String').implementation=function(a){return C.getInstance(a)}
-C.doFinal.overload('[B').implementation=function(d){return C.doFinal.call(this,d)} // + log
-var M=Java.use('javax.crypto.Mac')
-M.getInstance.overload('java.lang.String').implementation=function(a){return M.getInstance(a)}
-
-// === Network ===
-var R=Java.use('okhttp3.Request')
-R.url.implementation=function(){return R.url.call(this)} // + log
-
-// === Anti-Debug ===
-Java.use('android.os.Debug').isDebuggerConnected.implementation=function(){return false}
-// Native: Interceptor.attach(Module.findExportByName(null,'ptrace'),{onLeave:r=>r.replace(0)})
-
-// === Cronet/BoringSSL (Google apps, TikTok) ===
-// Find the module and hook SSL_CTX_set_custom_verify
-var mods = ['libcronet.so', 'libsscronet.so', 'libboringssl.so', 'libssl.so'];
-mods.forEach(function(m) {
-    var mod = Process.findModuleByName(m);
-    if (mod) {
-        var fn = Module.findExportByName(mod.name, 'SSL_CTX_set_custom_verify');
-        if (fn) {
-            Interceptor.attach(fn, {
-                onEnter: function(args) {
-                    args[2] = null; // NULL callback = no custom verification
-                }
-            });
-        }
-        var fn2 = Module.findExportByName(mod.name, 'SSL_set_custom_verify');
-        if (fn2) {
-            Interceptor.attach(fn2, {
-                onEnter: function(args) {
-                    args[2] = null;
-                }
-            });
-        }
-    }
-});
-// Fallback: search for export in any module
-var fn3 = Module.findExportByName(null, 'SSL_CTX_set_custom_verify');
-if (fn3) Interceptor.attach(fn3, { onEnter: function(args) { args[2] = null; } });
-
-// === Advanced (underground) Techniques ===
-// Native C-level bypass: hook open/access/fopen/stat/lstat → filter root paths
-// Native string scan bypass: hook strstr/memmem → filter "frida","magisk","su" in /proc/self/maps
-// Frida CModule API: hooks in native C (faster and stealthier than JS)
-// DexClassLoader.loadClass → intercept classes loaded at runtime
-// Process.killProcess/System.exit/Runtime.exit → prevent app suicide
-// FLAG_SECURE bypass Smali: replace 0x2000→0x0 in Window.addFlags/setFlags
-// Flutter dynamic offset: ADRP+ADD walkback from string anchors (ssl_client/ssl_server)
-// Cronet/BoringSSL (Google apps, TikTok): hook SSL_CTX_set_custom_verify → callback returns 0
-// Facebook Proxygen: hook native proxygen::SSLVerification::verifyWithMetrics
-// Dex dumping cross-sandbox: read /proc/<pid>/mem from Redroid host
-```
+- `setTimeout` solo dentro de `Java.perform()`
+- `tail -f /dev/zero | frida ...` para mantener vivo
+- Siempre misma versión client/server
+- NUNCA `return undefined` → `return ArrayList.$new()` o `return arguments[0]`
+- `arm64` para físico, `x86` para emulador google_apis
+- **Sesiones múltiples:** Kill con `kill $(pgrep -f "frida.*<PID>")` antes de re-attach
 
 ## Objection (top 8 commands)
 
@@ -625,7 +526,7 @@ Once traffic is captured, classify endpoints by type:
 
 ```bash
 # Extract all unique URLs from the mitmproxy capture file
-/home/usuario/.local/share/pipx/venvs/mitmproxy/bin/python3 << 'PYEOF'
+python3 << 'PYEOF'
 from mitmproxy import io
 from urllib.parse import urlparse
 flows = []
@@ -872,7 +773,9 @@ adb shell su -c "cat /data/adb/magisk.db" | strings | grep -i denylist
 - `mapping.txt` (if found in the APK/assets) reverses ProGuard renaming — always search for it before decompiling manually.
 - For encrypted strings: identify the method that takes a single `String`/`byte[]` and is called most frequently — that is usually the decrypter. Invoke it with Frida without reimplementing the algorithm.
 
-## Anti-Debugging and Anti-Tampering (beyond root)
+## Anti-Debugging and Anti-Tampering
+
+> **Contenido completo en sección "Anti-Debugging and Anti-Tampering (Extended)"** más abajo. Aquí el resumen rápido:
 
 | Technique | Detection | Bypass |
 |---|---|---|
@@ -882,6 +785,8 @@ adb shell su -c "cat /data/adb/magisk.db" | strings | grep -i denylist
 | APK signature verified at runtime | Detects recompilation | Hook hash comparator → `true` |
 | `/proc/self/maps` searching for "frida","xposed","magisk" | String matching in memory | Native hook `strstr`/`memmem` |
 
+**Para técnicas extendidas, Frida scripts y bypass detallado, ver sección "Anti-Debugging and Anti-Tampering (Extended)".**
+
 ## Xposed / LSPosed as a Frida Alternative
 
 - Frida is dynamic (PC + USB/network); Xposed/LSPosed is persistent (the hook survives reboots without a PC connected).
@@ -889,12 +794,16 @@ adb shell su -c "cat /data/adb/magisk.db" | strings | grep -i denylist
 - Basic structure: `IXposedHookLoadPackage` + `findAndHookMethod` on the target package, packaged as an APK and installed via LSPosed Manager.
 - Limitation: requires Zygisk/LSPosed (root); Frida can run without root with `frida-gadget` embedded in the APK.
 
-## Kotlin: Decompilation Particularities
+## Kotlin: Decompilation
 
-- `@Metadata` annotation — jadx uses it to reconstruct Kotlin-like syntax. If removed/obfuscated, it shows plain Java with synthetic getters/setters.
-- `Companion object` → inner static class (`Foo$Companion`) — look for constants and "static" methods there.
-- Coroutines (`suspend fun`) → `Continuation` parameter + state machine (`when(label)`) — hard to read; use the original method signature as a guide.
-- Null-safety (`?.`, `!!`) → `Intrinsics.checkNotNull()` — visual noise, ignore.
+> **Contenido completo en sección "Kotlin: Decompilation Particularities (Deep Dive)"** más abajo. Aquí el resumen rápido:
+
+- `@Metadata` annotation — jadx usa esto para reconstruir sintaxis Kotlin. Si se elimina/ofusca, se ve como Java plano con getters/setters sintéticos.
+- `Companion object` → clase interna estática (`Foo$Companion`) — buscar constantes y métodos "static" ahí.
+- Coroutines (`suspend fun`) → parámetro `Continuation` + state machine (`when(label)`).
+- Null-safety (`?.`, `!!`) → `Intrinsics.checkNotNull()` — ruido visual, ignorar.
+
+**Para tabla completa de patrones, estructura smali de corrutinas y Metadata, ver sección "Kotlin: Decompilation Particularities (Deep Dive)".**
 
 ## Manifest and Permission Analysis
 
@@ -1022,22 +931,16 @@ Copy and fill this template when producing a final report. Filling it demonstrat
 ## Environment
 
 - **Device:** Android 10+, ARM64, Magisk
-- **ADB:** `/home/usuario/Android/Sdk/platform-tools/adb`
+- **ADB:** `adb` (en PATH del sistema)
 - **CA:** `~/.mitmproxy/mitmproxy-ca-cert.pem`
 
 ---
 
 ## Flutter / Dart Reverse Engineering
 
-> **Skill dedicado:** `.opencode/skills/flutter-reverse-engineering/SKILL.md` (1285 líneas)
->
-> Flutter merece un skill propio porque: `libapp.so` (AOT snapshot), Dart VM internals (Object Pool, compressed pointers, QK Color objects), blutter, reFlutter, BoringSSL hooking — son temas que requieren tratamiento profundo.
->
-> **Usar el skill dedicado para:** análisis completo de snapshots, Dart VM internals, modificación de temas/colores, Frida Gadget embedding en Flutter.
->
-> **Resumen rápido aquí para triaje:**
+> **Skill completo:** `flutter-reverse-engineering` — RE profundo de Flutter/Dart: libapp.so (AOT snapshot), Dart VM internals (Object Pool, compressed pointers, QK Color objects), Blutter, unflutter, flutterdec, reFlutter, Frida Gadget embedding, theme/color modification.
 
-### Detección
+### Detección rápida (triage)
 
 ```bash
 unzip -l app.apk | grep -i "libapp.so\|libflutter.so"
@@ -1045,23 +948,16 @@ unzip -l app.apk | grep -i "libapp.so\|libflutter.so"
 # libflutter.so → Flutter engine (incluye BoringSSL para TLS)
 ```
 
-### Versión de Flutter
-
-```bash
-strings libflutter.so | grep -oP 'flutter_engine_version=\K.*'
-strings libflutter.so | grep -oP 'dart_sdk_version=\K.*'
-```
-
 ### SSL Pinning en Flutter
 
-Flutter usa **BoringSSL compilado dentro de `libflutter.so`**, no el del sistema. El pinning no se puede bypass con NSC ni con hooks de Java TrustManager.
+BoringSSL está compilado dentro de `libflutter.so` — no se puede bypass con NSC ni hooks Java TrustManager.
 
-**Opciones:**
-1. **reFlutter** — parchea el engine para deshabilitar pinning (reempaqueta el APK).
-2. **Hook nativo** — buscar `ssl_verify_cert_chain` o `SSL_CTX_set_verify` en `libflutter.so` y hookear con Frida. Ver script `scripts/flutter_ssl_bypass.js`.
-3. **iptables transparent** — redirigir tráfico a mitmproxy en modo transparente.
+**Opciones (ver skill dedicado para detalles):**
+1. **reFlutter** — parchea el engine, reempaqueta el APK
+2. **Hook nativo** — `ssl_verify_cert_chain` / `SSL_CTX_set_verify` en `libflutter.so`
+3. **iptables transparent** — redirigir a mitmproxy en modo transparente
 
-**Para análisis profundo de Flutter, cargar el skill `flutter-reverse-engineering`.**
+**Para análisis profundo (libapp.so, Blutter, Dart VM, Frida Gadget), cargar el skill `flutter-reverse-engineering`.**
 
 ---
 
@@ -1711,7 +1607,7 @@ Java.perform(function() {
     Runtime.exec.overload("java.lang.String").implementation = function(cmd) {
         if (cmd.indexOf("su") >= 0) {
             console.log("[Root] Blocked exec: " + cmd);
-            return null; // o lanzar IOException
+            throw Java.use("java.io.IOException").$new("Command not found");
         }
         return this.exec(cmd);
     };
@@ -1743,42 +1639,7 @@ Java.perform(function() {
 | APK signature verified at runtime | Detecta recompilación | Hook hash comparator → `true` |
 | DEX integrity hash en .so | Hash de classes.dex en nativo | Patch del memcmp o actualizar hash |
 
-### Bypass de anti-Frida
-
-```javascript
-// anti_frida_bypass.js
-// Hook strstr para filtrar "frida", "gum", "agent" en /proc/self/maps
-Interceptor.attach(Module.findExportByName("libc.so", "strstr"), {
-    onEnter: function(args) {
-        var needle = args[1].readCString();
-        if (needle && (needle.indexOf("frida") >= 0 || needle.indexOf("gum") >= 0 ||
-            needle.indexOf("agent") >= 0 || needle.indexOf("gadget") >= 0)) {
-            this.should_replace = true;
-        }
-    },
-    onLeave: function(retval) {
-        if (this.should_replace) {
-            retval.replace(0); // retornar NULL = no encontrado
-        }
-    }
-});
-
-// Hook fopen para /proc/self/maps
-Interceptor.attach(Module.findExportByName("libc.so", "fopen"), {
-    onEnter: function(args) {
-        var path = args[0].readCString();
-        if (path && path.indexOf("/proc/self/maps") >= 0) {
-            this.should_redirect = true;
-        }
-    },
-    onLeave: function(retval) {
-        if (this.should_redirect) {
-            // Retornar un FILE* a un archivo limpio sin frida
-            // o retornar NULL
-        }
-    }
-});
-```
+**Scripts de bypass:** Ver sección "Frida Detection and Evasion" más arriba (strstr, fopen, ptrace hooks).
 
 ---
 
@@ -1865,15 +1726,9 @@ curl -X POST http://localhost:8000/api/v1/download_pdf \
 
 ## Ghidra for ARM64 Native Analysis
 
-> **Skill dedicado:** `.opencode/skills/ghidra-pyghidra/SKILL.md` (434 líneas)
->
-> Ghidra + pyghidra como herramienta general de análisis binario. Cubre: instalación, análisis headless, scripting Python con API de Ghidra, decompilación automatizada, apertura de proyectos.
->
-> **Usar el skill dedicado para:** scripting pyghidra, análisis headless automatizado, API de Ghidra en Python.
->
-> **Workflow específico para Android ARM64 aquí:**
+> **Skill completo:** `ghidra-pyghidra` — análisis headless, scripting Python con API de Ghidra, decompilación automatizada, gestión de proyectos.
 
-### Workflow de análisis nativo
+### Workflow Android ARM64
 
 ```bash
 # 1. Extraer .so
@@ -1930,11 +1785,7 @@ Ctrl+L    - Retype return value
 
 ### FindCrypt (Ghidra Plugin)
 
-Plugin que identifica constantes criptográficas y algoritmos en código binario:
-- AES S-box (0x63, 0x7C, 0x77...)
-- CRC32 table
-- MD5 init values
-- SHA-256 constants
+Identifica constantes criptográficas: AES S-box, CRC32 table, MD5 init values, SHA-256 constants.
 
 **Para scripting avanzado con pyghidra, cargar el skill `ghidra-pyghidra`.**
 
@@ -1942,93 +1793,24 @@ Plugin que identifica constantes criptográficas y algoritmos en código binario
 
 ## Frida Advanced Techniques
 
-### CModule (hooks nativos en C)
-
-CModule permite escribir hooks en C nativo, más rápido y stealthy que JS:
-
-```javascript
-var cm = new CModule(`
-#include <gum/guminterceptor.h>
-
-void on_enter(GumInvocationContext *ic) {
-    // Hook nativo en C
-    gpointer *arg0 = gum_invocation_context_get_nth_argument(ic, 0);
-    // ...
-}
-
-void on_leave(GumInvocationContext *ic) {
-    // ...
-}
-`);
-
-Interceptor.attach(target_addr, {
-    onEnter: cm.on_enter,
-    onLeave: cm.on_leave
-});
-```
-
-### Memory scanning
-
-```javascript
-// Buscar strings en memoria
-Memory.scanSync(ptr("0x40000000"), 0x10000000, "48 65 6c 6c 6f")  // "Hello" en hex
-
-// Buscar patrón de bytes
-Memory.scanSync(baseAddr, size, "48 8b ?? ?? 48 85")  // ?? = wildcard
-
-// Dump de región de memoria
-var data = Memory.readByteArray(ptr("0x12345678"), 256);
-console.log(hexdump(data, {ansi: true}));
-```
-
-### DexClassLoader hook
-
-```javascript
-// Intercepta clases cargadas dinámicamente
-Java.perform(function() {
-    var DexClassLoader = Java.use("dalvik.system.DexClassLoader");
-    DexClassLoader.$init.implementation = function(dexPath, optDir, libPath, parent) {
-        console.log("[DEX-LOAD] Loading: " + dexPath);
-        return this.$init(dexPath, optDir, libPath, parent);
-    };
-
-    // Hook loadClass para ver qué clases se cargan
-    DexClassLoader.loadClass.implementation = function(name) {
-        console.log("[DEX-CLASS] " + name);
-        return this.loadClass(name);
-    };
-});
-```
-
-### Anti-suicide hooks
-
-```javascript
-// Prevenir que la app se cierre al detectar instrumentación
-Java.perform(function() {
-    var System = Java.use("java.lang.System");
-    System.exit.implementation = function(code) {
-        console.log("[BLOCKED] System.exit(" + code + ")");
-        // No llamar al original = prevenir exit
-    };
-
-    var Runtime = Java.use("java.lang.Runtime");
-    Runtime.exit.implementation = function(code) {
-        console.log("[BLOCKED] Runtime.exit(" + code + ")");
-    };
-
-    var Process = Java.use("android.os.Process");
-    Process.killProcess.implementation = function(pid) {
-        console.log("[BLOCKED] killProcess(" + pid + ")");
-    };
-});
-```
+> **Skill completo:** `frida-expert` — CModule (hooks nativos en C), Memory scanning, DexClassLoader hook, Anti-suicide hooks, y más. Ver secciones correspondientes en el skill dedicado.
 
 ---
 
 ## Toolbox Reference
 
-Referencia completa de herramientas en `reports/android-re-toolbox.md` (16 secciones):
-- Estática, Smali/DEX, Dinámica, Nativo ARM64, Flutter/Dart, Kotlin, Red/SSL, Desofuscación, Anti-tamper, Criptografía, Empaquetado, Root/Integrity, Automatización, MSTG/MASVS, Awesome lists, Comandos rápidos.
+Herramientas por fase (ver también las tablas en Prerequisites y Learning References):
+
+| Fase | Principal | Alternativas |
+|---|---|---|
+| Triage | jadx 1.5.1, apktool 2.7.0, aapt | unzip, strings, aapt2 |
+| Java | jadx-gui, grep, Vineflower | MobSF, AndroGuard |
+| Dynamic | Frida 17.15.3, Objection 1.12.5 | Medusa, Auto-Frida |
+| Network | HTTP Toolkit, mitmdump 12.x, tcpdump | Burp, Wireshark |
+| Native | Ghidra 12.x, radare2 6.1.9 | IDA Pro, Il2CppDumper |
+| Flutter | reFlutter, iptables | kill_flutter (dynamic offset) |
+| Root | Magisk, KernelSU, KernelSU-Next | TrickyStore, Shamiko, HMA-OSS |
+| Stealth | fridare, phantom-frida | renef (memfd, no ptrace) |
 
 ---
 
@@ -2050,7 +1832,12 @@ Referencia completa de herramientas en `reports/android-re-toolbox.md` (16 secci
 
 ## Changelog
 
-- **2026-07-20 (v4 — Major Expansion)**: 
+- **2026-07-21 (v5 — Restructuring as Router)**:
+  - **Delegación a skills especializados**: Frida Cookbook (~120 líneas de snippets), Flutter summary (~35 líneas), Ghidra workflow (~75 líneas), Frida Advanced Techniques (~80 líneas) reemplazados por tablas resumen + links a `frida-expert`, `flutter-reverse-engineering`, `ghidra-pyghidra`.
+  - **Duplicados eliminados**: Kotlin brief (6 líneas) y Anti-Debugging brief (10 líneas) reemplazados por cross-refs a sus respectivas secciones deep dive. Scripts anti-Frida duplicados (Anti-Debugging Extended) eliminados.
+  - **Bugs corregidos**: `fopen` hook anti-Frida implementado (estaba solo comentarios). Referencia muerta a `reports/android-re-toolbox.md` reemplazada por tabla inline. Paths hardcodeados `/home/usuario/` corregidos a genéricos.
+  - **Contradicciones resueltas**: iptables DNAT prohibido VS usado para QUIC (nota aclaratoria añadida). `Runtime.exec` unificado a `throw IOException`.
+  - **Reducción total**: 2065 → 1847 líneas (-10.6%).
   - **Frameworks modernos**: gRPC/Protobuf análisis completo (extracción de .proto desde DEX, decode black-box con protoscope/script, hook Frida, grpcurl replay), Unity/IL2CPP (pipeline Il2CppDumper + Ghidra, patch ARM64, metadata cifrada), React Native/Hermes (detección, descompilación hbc, bridge hook).
   - **Attack surface extension**: Deep Links/App Links hijacking, AIDL/Binder exploitation, ContentProvider/DocumentProvider path traversal.
   - **AAB/App Bundle**: conversión a APK universal, módulos dinámicos, bundletool.

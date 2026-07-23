@@ -37,6 +37,8 @@ Complete methodology for reverse engineering Flutter Android applications. Cover
 13. [Tool Reference](#13-tool-reference)
 14. [Common Pitfalls](#14-common-pitfalls)
 15. [References](#15-references)
+16. [Case Study](#16-case-study)
+17. [Skills relacionados](#skills-relacionados)
 
 ---
 
@@ -506,44 +508,13 @@ r2flutter -m obfuscation_map.json -A libapp.so
 r2flutter -HH libapp.so
 ```
 
-### 4.5 Object Pool Analysis (pp.txt)
+### 4.5 Object Pool Analysis
 
-The Object Pool (`pp.txt`) is the single most valuable output for finding secrets, endpoints, and constants.
-
-```bash
-# Find all QK (Color) objects with double values
-grep "Obj!QK" pp.txt
-
-# Find strings that look like URLs or keys
-rg -n "(https?://|api[_-]?key|token|secret)" pp.txt
-
-# Find all IMM (Immediate) values that could be ARGB colors
-python3 -c "
-import re
-with open('pp.txt') as f:
-    for line in f:
-        if 'IMM' in line:
-            val = line.split('IMM:')[1].strip()
-            if '0xff' in val.lower() and len(val) > 10:
-                print(line.strip())
-"
-
-# Count object types
-grep -oP 'Obj!\K\w+' pp.txt | sort | uniq -c | sort -rn | head -20
-```
+Ver sección 4.1 (Interpretar pp.txt) para comandos de búsqueda en el Object Pool.
 
 ### 4.6 Searching asm/ for Target Code
 
-```bash
-# Find functions referencing specific strings
-rg -l "login\|auth\|password\|token" blutter_out/asm/
-
-# Find color-related code
-rg -l "Color\|0xff\|TextStyle\|Theme" blutter_out/asm/
-
-# Find network-related functions
-rg -l "HttpClient\|WebSocket\|connect\|socket" blutter_out/asm/
-```
+Ver sección 4.1 (Búsqueda de funciones en asm/) para comandos de búsqueda en el ensamblador anotado.
 
 ---
 
@@ -969,12 +940,11 @@ reflutter --help
 reFlutter necesita coincidir la versión exacta de Flutter de la app. Obtén el snapshot hash primero:
 
 ```bash
-# Extraer libapp.python3 -c "
+# Extraer libapp.so y buscar snapshot hash
+python3 -c "
 import sys
 with open('libapp.so', 'rb') as f:
     data = f.read()
-    # Buscar snapshot hash (primeros 32 bytes después del header ELF)
-    # El hash aparece como string legible tipo "a1b2c3d4..."
     import re
     matches = re.findall(b'[a-f0-9]{32}', data)
     if matches:
@@ -1016,14 +986,17 @@ adb install -r release.RE.signed.apk
 
 ```
 1. Descomprime el APK
-2. Lee lib/arm64-v8a/libflutter.3. Clona el repositorio flutter/engine commit que coincide con esa versión
+2. Lee lib/arm64-v8a/libflutter.so
+3. Clona el repositorio flutter/engine commit que coincide con esa versión
 4. Parchea ssl_x509.cc:
    - Función: ssl_crypto_x509_session_verify_cert_chain()
    - Cambio: force return 1 (siempre confía en el cert)
 5. Opcionalmente parchea socket.cc:
    - Hardcodea la IP del proxy en Dart's socket layer
    - Esto hace que Dart use el proxy aunque ignore las settings del sistema
-6. Recompila libflutter.7. Reemplaza lib/arm64-v8a/libflutter.8. Reempaqueta el APK
+6. Recompila libflutter.so
+7. Reemplaza lib/arm64-v8a/libflutter.so
+8. Reempaqueta el APK
 ```
 
 #### Verificar que el Parche Funcionó
@@ -1094,7 +1067,7 @@ sed -i 's/return 0;/return 1;/g' src/third_party/boringssl/src/ssl/ssl_x509.cc
 pip install pyghidra
 # Requires Ghidra installed
 
-# Auto-generate Frida + Renef scripts
+# Auto-generate Frida bypass scripts
 python3 flutter_ssl_pinning.py extracted_libs/libflutter.so
 
 # Run generated script
@@ -1104,7 +1077,7 @@ frida -U -f com.target.app -l flutter_ssl_pinning.js
 **How it works:**
 1. PyGhidra scans `libflutter.so` for `"ssl_client"` string
 2. Follows XREFs to find the 3-parameter function (ssl_crypto_x509_session_verify_cert_chain)
-3. Bakes the RVA into generated Frida/Renef scripts
+3. Bakes the RVA into generated Frida bypass scripts
 
 ### Method C: Manual Pattern Scan (Frida)
 
@@ -1194,7 +1167,8 @@ When symbols are stripped, use this priority:
 
 ### Why Standard Proxy Doesn't Work
 
-- Dart's HTTP client routes directly, ignoring Android system proxy
+- Dart's HTTP client routes directly, ignoring Android system proxy (Flutter <3.24.0)
+- Flutter 3.24.0+ added support for system proxy, but not all apps use it
 - BoringSSL uses its own CA store inside `libflutter.so`
 - No CONNECT request is sent to the proxy
 
@@ -1536,7 +1510,7 @@ find . -name "app.*.dwarf" -o -name "split-debug-info"
 | Tool | Purpose | Install |
 |------|---------|---------|
 | APKEditor | Merge/split/rebuild APKs | GitHub release JAR |
-| Ghidra | Disassembly + decompilation | `brew install ghidra` |
+| Ghidra | Disassembly + decompilation | `brew install --cask ghidra` |
 | IDA Pro | Disassembly + Hex-Rays | Commercial |
 | Radare2 | Binary analysis | `brew install radare2` |
 | Frida | Dynamic instrumentation | `pip install frida-tools` |
@@ -1555,7 +1529,7 @@ find . -name "app.*.dwarf" -o -name "split-debug-info"
 | Use `apktool b` on merged splits | aapt2 rejects `_` prefixed resource names | Use `APKEditor b` instead |
 | Place Frida script at `/data/local/tmp/` | SELinux `untrusted_app` can't read `shell_data_file` | Embed script inside APK as `.script.so` |
 | Hook `Dart_Initialize` | Symbol not exported in `libflutter.so` | Use `setTimeout(3000)` or hook `android_dlopen_ext` |
-| Use `settings put global http_proxy` | Dart ignores Android system proxy | Use iptables, Frida socket redirect, or emulator proxy |
+| Use `settings put global http_proxy` | Flutter <3.24.0: Dart ignores system proxy. Flutter 3.24.0+: funciona pero no todas las apps lo usan | Verificar versión de Flutter; para <3.24.0 usar iptables o Frida socket redirect |
 | Patch QK objects with `int(0x0)` values | May be Smi(0) not double(0.0); may not be referenced by UI | Only patch QKs with confirmed `double()` values from pp.txt |
 | Leave memory as `rw-` after patching | Violates Android W^X policy → crash | Restore to `r-x` after writing |
 | Protect `object + 0x10` instead of base | May cross page boundary | Protect the object base address |
@@ -1896,3 +1870,14 @@ adb shell monkey -p com.bancoejemplo.app -c android.intent.category.LAUNCHER 1
 - **`httptoolkit-android`** — HTTP Toolkit en Android. Usar para captura de tráfico cuando reFlutter no sea viable o se necesite un enfoque alternativo.
 - **`android-cleanup`** — Limpieza post-pentesting. Usar después de sesiones de dynamic analysis con Frida o reFlutter.
 - **handshake.cc** — https://github.com/google/boringssl/blob/main/ssl/handshake.cc (target: `ssl_verify_peer_cert`)
+
+## Changelog
+
+- **2026-07-21 (v2 — Cleanup)**:
+  - **Duplicados eliminados**: Secciones 4.5 (Object Pool Analysis) y 4.6 (Searching asm/) fusionadas con 4.1 — ahora son cross-references.
+  - **TOC actualizado**: Añadidas Sección 16 (Case Study) y "Skills relacionados".
+  - **Bugs corregidos**: Bash block roto en reFlutter snapshot hash fixeado. Líneas concatenadas en "Qué Hace reFlutter Internamente" separadas.
+  - **Contradicción resuelta**: Proxy de sistema — "Dart ignores system proxy" VS "Flutter 3.24.0+ lo soporta". Ahora es version-aware.
+  - **"Renef" eliminado**: Era un nombre de herramienta indefinido; reemplazado por "Frida bypass scripts".
+  - **Corrección**: `brew install ghidra` → `brew install --cask ghidra`.
+  - **Reducción total**: 1898 → 1872 líneas.
